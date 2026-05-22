@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DemoShop — Online Store</title>
 
-  <!-- Sentry Browser SDK -->
-  <script src="https://browser.sentry-cdn.com/7.99.0/bundle.min.js" crossorigin="anonymous"></script>
-
   <style>
     /* ── Reset & Base ─────────────────────────────────────────── */
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -964,20 +961,12 @@
 <!-- Footer -->
 <footer class="site-footer">
   <p>© 2024 DemoShop — A demo e-commerce platform for testing and QA purposes.</p>
-  <p>Powered by Node.js · Sentry · Gemini AI · Jira</p>
+  <p>Powered by Node.js · Gemini AI · Jira</p>
 </footer>
 
 <script>
   // ────────────────────────────────────────────────────────────
-  //  Sentry Init
-  // ────────────────────────────────────────────────────────────
-  Sentry.init({
-    dsn: "https://192fcf070d3ac1a68c1b8edb165d08e5@o4511337470623744.ingest.us.sentry.io/4511347565133825",
-    environment: "development"
-  });
-
-  // ────────────────────────────────────────────────────────────
-  //  Bug Reporter  →  Terminal + Sentry + Gemini + Jira
+  //  Bug Reporter  →  Gemini AI classify → Jira (no Sentry)
   // ────────────────────────────────────────────────────────────
   const reportedShopIssues = new Set();
 
@@ -986,18 +975,15 @@
     if (reportedShopIssues.has(key)) return;
     reportedShopIssues.add(key);
 
-    // Capture in Sentry dashboard
-    Sentry.captureMessage(`${field}: ${message}`, "warning");
-
-    // Fire automation pipeline (terminal → Gemini → Jira)
+    // Send directly to server → Gemini → Jira
     try {
-      await fetch("http://localhost:3000/log-bug", {
+      await fetch("/log-bug", {
         method:  "POST",
         headers: { "Content-Type": "application/json" },
         body:    JSON.stringify({ field, message, data: String(data ?? "") })
       });
     } catch (e) {
-      console.warn("[DemoShop] Could not reach log server:", e.message);
+      // server unreachable
     }
   }
 

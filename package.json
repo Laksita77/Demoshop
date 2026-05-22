@@ -1,15 +1,16 @@
 {
-  "name": "sports-registration-app",
+  "name": "demoshop",
   "version": "1.0.0",
-  "description": "Sports Registration App with Sentry + Gemini + Jira + Resend automation",
+  "description": "DemoShop — E-Commerce with Gemini AI + Jira automated bug logging",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start":    "node server.js",
+    "test":     "node testrunner.js",
+    "autotest": "node playwright-runner.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
-    "@sentry/node": "^8.0.0",
     "dotenv": "^16.4.5",
-    "nodemailer": "^6.9.14"
+    "playwright": "^1.60.0"
   }
 }
