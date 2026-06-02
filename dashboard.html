@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QA AI Pipeline — Test Suite Manager</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0d1117; color: #c9d1d9; min-height: 100vh; }
+
+    /* ── Header ── */
+    .header {
+      background: #161b22; border-bottom: 1px solid #30363d;
+      padding: 14px 32px; display: flex; align-items: center; justify-content: space-between;
+    }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .logo { font-size: 1.25rem; font-weight: 700; color: #f0f6fc; }
+    .logo span { color: #58a6ff; }
+    .badge { background: #21262d; border: 1px solid #30363d; color: #8b949e; font-size: 0.72rem; padding: 3px 10px; border-radius: 20px; }
+    .live-indicator { display: flex; align-items: center; gap: 7px; font-size: 0.8rem; color: #8b949e; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: #6e7681; flex-shrink: 0; }
+    .dot.running { background: #3fb950; animation: pulse 1.2s ease-in-out infinite; }
+    .dot.done    { background: #58a6ff; }
+    @keyframes pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.4; transform:scale(0.75); } }
+
+    /* ── Stats ── */
+    .stats { display: flex; gap: 14px; padding: 24px 32px 0; flex-wrap: wrap; }
+    .stat {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      padding: 16px 22px; flex: 1; min-width: 110px;
+    }
+    .stat-label { font-size: 0.7rem; color: #8b949e; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
+    .stat-value { font-size: 1.9rem; font-weight: 700; color: #f0f6fc; }
+    .stat-value.green  { color: #3fb950; }
+    .stat-value.red    { color: #f85149; }
+    .stat-value.purple { color: #bc8cff; }
+    .stat-value.blue   { color: #58a6ff; }
+
+    /* ── Progress ── */
+    .progress-wrap { padding: 18px 32px 0; }
+    .progress-meta { display: flex; justify-content: space-between; font-size: 0.78rem; color: #8b949e; margin-bottom: 7px; }
+    .progress-bar  { height: 5px; background: #21262d; border-radius: 3px; overflow: hidden; }
+    .progress-fill { height: 100%; background: linear-gradient(90deg, #58a6ff, #bc8cff); border-radius: 3px; transition: width 0.4s ease; width: 0%; }
+
+    /* ── Table ── */
+    .table-wrap { margin: 22px 32px 32px; background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden; }
+    .table-header { padding: 14px 20px; border-bottom: 1px solid #30363d; display: flex; justify-content: space-between; align-items: center; }
+    .table-title { font-size: 0.9rem; font-weight: 600; color: #f0f6fc; }
+    .run-meta { font-size: 0.75rem; color: #6e7681; }
+
+    table { width: 100%; border-collapse: collapse; }
+    th {
+      text-align: left; padding: 11px 16px; font-size: 0.68rem; font-weight: 600;
+      color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px;
+      background: #0d1117; border-bottom: 1px solid #21262d;
+    }
+    td { padding: 12px 16px; font-size: 0.84rem; border-bottom: 1px solid #21262d; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+
+    .tc-id   { font-family: monospace; font-size: 0.78rem; color: #8b949e; white-space: nowrap; }
+    .tc-name { color: #e6edf3; font-weight: 500; }
+    .tc-sub  { font-size: 0.72rem; color: #6e7681; margin-top: 3px; max-width: 340px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    /* Status badges */
+    .status {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; border-radius: 20px; font-size: 0.73rem; font-weight: 600; white-space: nowrap;
+    }
+    .s-pending     { background: #21262d;  color: #6e7681; }
+    .s-running     { background: #112030;  color: #79c0ff; animation: blink 1s ease-in-out infinite; }
+    .s-classifying { background: #1e1040;  color: #bc8cff; animation: blink 1s ease-in-out infinite; }
+    .s-pass        { background: #0f2a1a;  color: #3fb950; }
+    .s-fail        { background: #2a0f0f;  color: #f85149; }
+    .s-error       { background: #2a1f0f;  color: #e3b341; }
+    @keyframes blink { 0%,100% { opacity:1; } 50% { opacity:0.55; } }
+
+    /* Category badges */
+    .cat {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; border-radius: 20px; font-size: 0.73rem; font-weight: 600;
+    }
+    .cat-security    { background: #2a0f0f; color: #f85149; }
+    .cat-backend     { background: #2a1f0f; color: #e3b341; }
+    .cat-frontend    { background: #0f1f2a; color: #79c0ff; }
+    .cat-performance { background: #1a0f2a; color: #bc8cff; }
+    .cat-trivial     { background: #21262d; color: #6e7681; }
+
+    .jira-link {
+      color: #58a6ff; text-decoration: none; font-size: 0.78rem;
+      font-family: monospace; display: inline-flex; align-items: center; gap: 4px;
+    }
+    .jira-link:hover { text-decoration: underline; }
+    .dash { color: #6e7681; font-size: 0.78rem; }
+
+    /* Empty state */
+    .empty { text-align: center; padding: 56px 20px; color: #6e7681; }
+    .empty-icon { font-size: 2.8rem; margin-bottom: 14px; }
+    .empty code { background: #21262d; padding: 2px 8px; border-radius: 4px; font-size: 0.82rem; color: #8b949e; }
+
+    /* ── Chat Agent ── */
+    .chat-wrap {
+      margin: 0 32px 32px;
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px; overflow: hidden;
+    }
+    .chat-header {
+      padding: 14px 20px; border-bottom: 1px solid #30363d;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .chat-header-title { font-size: 0.9rem; font-weight: 600; color: #f0f6fc; }
+    .chat-header-sub   { font-size: 0.75rem; color: #6e7681; }
+    .chat-ai-dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950; flex-shrink: 0; }
+
+    .chat-messages {
+      height: 300px; overflow-y: auto; padding: 16px 20px;
+      display: flex; flex-direction: column; gap: 12px;
+      scrollbar-width: thin; scrollbar-color: #30363d transparent;
+    }
+
+    .msg { display: flex; gap: 10px; max-width: 90%; }
+    .msg.user  { align-self: flex-end; flex-direction: row-reverse; }
+    .msg.agent { align-self: flex-start; }
+
+    .msg-avatar {
+      width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center; font-size: 0.85rem;
+    }
+    .msg.user  .msg-avatar { background: #1f4a8a; }
+    .msg.agent .msg-avatar { background: #1a3a1a; }
+
+    .msg-bubble {
+      padding: 10px 14px; border-radius: 12px; font-size: 0.83rem; line-height: 1.55;
+      white-space: pre-wrap; word-break: break-word;
+    }
+    .msg.user  .msg-bubble { background: #1f4a8a; color: #cae3ff; border-radius: 12px 2px 12px 12px; }
+    .msg.agent .msg-bubble { background: #1c2128; color: #c9d1d9; border-bottom-left-radius: 2px; border: 1px solid #30363d; }
+    .msg.log   .msg-bubble {
+      background: #0d1117; color: #8b949e; font-family: monospace; font-size: 0.76rem;
+      border: 1px solid #21262d; width: 100%; max-width: 100%;
+    }
+    .msg.log { max-width: 100%; }
+    .msg-bubble.success { color: #3fb950 !important; }
+    .msg-bubble.error   { color: #f85149 !important; }
+    .msg-bubble.info    { color: #79c0ff !important; }
+
+    .typing-dots span {
+      display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+      background: #8b949e; margin: 0 2px; animation: bounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes bounce { 0%,80%,100% { transform:translateY(0); } 40% { transform:translateY(-6px); } }
+
+    .chat-input-area {
+      padding: 14px 16px; border-top: 1px solid #30363d;
+      display: flex; gap: 10px; align-items: center;
+    }
+    .chat-input {
+      flex: 1; background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
+      color: #e6edf3; padding: 10px 14px; font-size: 0.85rem; outline: none;
+      font-family: inherit; resize: none; height: 42px; line-height: 1.4;
+    }
+    .chat-input:focus  { border-color: #58a6ff; }
+    .chat-input::placeholder { color: #484f58; }
+    .chat-send {
+      background: #1f6feb; border: none; color: #fff; padding: 10px 18px;
+      border-radius: 8px; cursor: pointer; font-size: 0.83rem; font-weight: 600;
+      white-space: nowrap; transition: background 0.15s;
+    }
+    .chat-send:hover    { background: #388bfd; }
+    .chat-send:disabled { background: #21262d; color: #484f58; cursor: not-allowed; }
+
+    .chat-suggestions { padding: 0 16px 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .chip {
+      background: #21262d; border: 1px solid #30363d; color: #8b949e;
+      border-radius: 20px; padding: 4px 12px; font-size: 0.73rem; cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chip:hover { background: #2d333b; color: #c9d1d9; border-color: #58a6ff; }
+
+    /* ── Tabs ── */
+    .tabs { display: flex; gap: 0; border-bottom: 1px solid #30363d; margin: 0 32px; }
+    .tab-btn {
+      padding: 10px 20px; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+      background: none; border: none; color: #8b949e; border-bottom: 2px solid transparent;
+      transition: all 0.15s; margin-bottom: -1px;
+    }
+    .tab-btn:hover  { color: #c9d1d9; }
+    .tab-btn.active { color: #58a6ff; border-bottom-color: #58a6ff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Suites Panel ── */
+    .suites-wrap { margin: 22px 32px 32px; }
+    .suite-site {
+      background: #161b22; border: 1px solid #30363d; border-radius: 8px;
+      margin-bottom: 16px; overflow: hidden;
+    }
+    .suite-site-header {
+      padding: 14px 20px; display: flex; justify-content: space-between; align-items: center;
+      border-bottom: 1px solid #30363d; cursor: pointer;
+    }
+    .suite-site-header:hover { background: rgba(255,255,255,0.02); }
+    .suite-domain { font-size: 0.92rem; font-weight: 600; color: #f0f6fc; }
+    .suite-meta   { font-size: 0.75rem; color: #6e7681; }
+    .suite-sprints { padding: 12px 20px; display: flex; flex-direction: column; gap: 10px; }
+    .sprint-row {
+      background: #0d1117; border: 1px solid #21262d; border-radius: 6px;
+      padding: 10px 14px; display: flex; justify-content: space-between; align-items: center;
+    }
+    .sprint-info { display: flex; flex-direction: column; gap: 3px; }
+    .sprint-name { font-size: 0.83rem; font-weight: 600; color: #e6edf3; }
+    .sprint-sub  { font-size: 0.72rem; color: #6e7681; }
+    .sprint-runs { display: flex; flex-direction: column; gap: 4px; align-items: flex-end; }
+    .run-chip {
+      font-size: 0.7rem; padding: 2px 8px; border-radius: 12px;
+      background: #21262d; color: #8b949e; white-space: nowrap;
+    }
+    .run-chip.passed { background: #0f2a1a; color: #3fb950; }
+    .run-chip.failed { background: #2a0f0f; color: #f85149; }
+    .rerun-btn {
+      background: #21262d; border: 1px solid #30363d; color: #8b949e;
+      padding: 5px 12px; border-radius: 6px; font-size: 0.75rem; cursor: pointer;
+      transition: all 0.15s; white-space: nowrap; margin-left: 12px;
+    }
+    .rerun-btn:hover { background: #1f6feb; color: #fff; border-color: #1f6feb; }
+    .suites-empty { text-align: center; padding: 40px; color: #6e7681; font-size: 0.85rem; }
+    .suites-loading { text-align: center; padding: 30px; color: #8b949e; font-size: 0.82rem; }
+
+    /* Footer */
+    footer { text-align: center; padding: 16px; color: #6e7681; font-size: 0.72rem; border-top: 1px solid #21262d; }
+  </style>
+</head>
+<body>
+
+<header class="header">
+  <div class="header-left">
+    <div class="logo">QA <span>AI</span> Pipeline</div>
+    <span class="badge">Test Suite Manager</span>
+  </div>
+  <div class="live-indicator">
+    <div class="dot" id="dot"></div>
+    <span id="liveLabel">Waiting for test run…</span>
+  </div>
+</header>
+
+<!-- ── AI Chat Agent ─────────────────────────────────────────────────────── -->
+<div class="chat-wrap">
+  <div class="chat-header">
+    <div class="chat-ai-dot"></div>
+    <div>
+      <div class="chat-header-title">🤖 AI Agent</div>
+      <div class="chat-header-sub">Ask me to run tests or analyse any website</div>
+    </div>
+  </div>
+
+  <div class="chat-messages" id="chatMessages">
+    <div class="msg agent">
+      <div class="msg-avatar">🤖</div>
+      <div class="msg-bubble">
+        👋 Hi! I'm your <strong>QA AI Agent</strong>.<br><br>
+        📋 <strong>User story</strong> → <em>"As a user I want to search on https://myntra.com"</em><br>
+        🌐 <strong>Generate tests</strong> → <em>"Generate 6 tests for flipkart.com"</em><br>
+        📝 <strong>Manual tests</strong> → <em>"manual: check login, verify cart on amazon.in"</em><br>
+        📚 <strong>History</strong> → <em>"Show test history"</em>
+      </div>
+    </div>
+  </div>
+
+  <div class="chat-suggestions">
+    <span class="chip" onclick="sendChip(this)">▶ Run tests</span>
+    <span class="chip" onclick="sendChip(this)">🌐 Generate 6 tests for https://myntra.com</span>
+    <span class="chip" onclick="sendChip(this)">📋 User story: As a user I want to search for products on https://snapdeal.com</span>
+    <span class="chip" onclick="sendChip(this)">📚 Show test history</span>
+  </div>
+
+  <div class="chat-input-area">
+    <input
+      class="chat-input" id="chatInput" type="text"
+      placeholder="e.g. 'User story: As a user I want to…' · 'Sprint-23 tests for flipkart' · 'manual: check login, verify cart on amazon.in'"
+      onkeydown="if(event.key==='Enter') sendChat()"
+    />
+    <button class="chat-send" id="chatSend" onclick="sendChat()">Send ➤</button>
+  </div>
+</div>
+
+<!-- ── Tabs ────────────────────────────────────────────────────────────────── -->
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('live',this)">🔴 Live Run</button>
+  <button class="tab-btn"        onclick="switchTab('suites',this)">📁 Test Suites</button>
+</div>
+
+<!-- ── Live Run Tab ────────────────────────────────────────────────────────── -->
+<div id="tab-live" class="tab-panel active">
+
+<div class="stats">
+  <div class="stat"><div class="stat-label">Total Tests</div><div class="stat-value"        id="sTotal">—</div></div>
+  <div class="stat"><div class="stat-label">Passed</div>     <div class="stat-value green"  id="sPassed">—</div></div>
+  <div class="stat"><div class="stat-label">Failed</div>     <div class="stat-value red"    id="sFailed">—</div></div>
+  <div class="stat"><div class="stat-label">AI Classified</div><div class="stat-value purple" id="sAI">—</div></div>
+  <div class="stat"><div class="stat-label">Jira Tickets</div><div class="stat-value blue"  id="sJira">—</div></div>
+</div>
+
+<div class="progress-wrap">
+  <div class="progress-meta">
+    <span id="progressLabel">No active run</span>
+    <span id="progressPct">0%</span>
+  </div>
+  <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+</div>
+
+<div class="table-wrap">
+  <div class="table-header">
+    <span class="table-title">Test Results</span>
+    <span class="run-meta" id="runMeta"></span>
+  </div>
+  <div id="tableBody">
+    <div class="empty">
+      <div class="empty-icon">🤖</div>
+      <p>Start a test run to see live results here.</p>
+      <p style="margin-top:10px;font-size:0.82rem">
+        <code>npm test</code> &nbsp;·&nbsp;
+        <code>npm run autotest</code> &nbsp;·&nbsp;
+        <code>npm run generate</code>
+      </p>
+    </div>
+  </div>
+</div>
+
+</div><!-- end tab-live -->
+
+<!-- ── Test Suites Tab ─────────────────────────────────────────────────────── -->
+<div id="tab-suites" class="tab-panel">
+  <div class="suites-wrap">
+    <div id="suitesContent" class="suites-loading">⏳ Loading test suites…</div>
+  </div>
+</div>
+
+<footer>QA AI Bug Pipeline &nbsp;·&nbsp; Gemini AI &nbsp;·&nbsp; Live via SSE</footer>
+
+<script>
+  const CAT_CLASS = { Security:"cat-security", Backend:"cat-backend", Frontend:"cat-frontend", Performance:"cat-performance", Trivial:"cat-trivial" };
+  const CAT_EMOJI = { Security:"🔴", Backend:"🟠", Frontend:"🟡", Performance:"🔵", Trivial:"⚪" };
+  const STATUS_HTML = {
+    pending:     `<span class="status s-pending">● Pending</span>`,
+    running:     `<span class="status s-running">⏳ Running</span>`,
+    classifying: `<span class="status s-classifying">🤖 AI Classifying…</span>`,
+    pass:        `<span class="status s-pass">✅ Pass</span>`,
+    fail:        `<span class="status s-fail">❌ Fail</span>`,
+    error:       `<span class="status s-error">💥 Error</span>`
+  };
+
+  function render(run) {
+    if (!run || !run.id) return;
+
+    const tests    = (run.tests || []).filter(t => t.id !== "__done__");
+    const done     = tests.filter(t => ["pass","fail","error"].includes(t.status));
+    const passed   = tests.filter(t => t.status === "pass").length;
+    const failed   = tests.filter(t => t.status === "fail" || t.status === "error").length;
+    const aiDone   = tests.filter(t => t.category).length;
+    const jiraDone = tests.filter(t => t.jiraUrl).length;
+    const total    = tests.length;
+    const pct      = total > 0 ? Math.round((done.length / total) * 100) : 0;
+
+    // Stats
+    document.getElementById("sTotal").textContent  = total  || "—";
+    document.getElementById("sPassed").textContent = total  ? passed  : "—";
+    document.getElementById("sFailed").textContent = total  ? failed  : "—";
+    document.getElementById("sAI").textContent     = total  ? aiDone  : "—";
+    document.getElementById("sJira").textContent   = total  ? jiraDone : "—";
+
+    // Progress
+    document.getElementById("progressFill").style.width = pct + "%";
+    document.getElementById("progressPct").textContent  = pct + "%";
+    document.getElementById("progressLabel").textContent =
+      run.finished ? `Completed · ${done.length}/${total} tests` :
+      total > 0    ? `Running · ${done.length}/${total} tests`   : "No active run";
+
+    // Live dot
+    const dot   = document.getElementById("dot");
+    const label = document.getElementById("liveLabel");
+    dot.className = run.finished ? "dot done" : total > 0 ? "dot running" : "dot";
+    label.textContent = run.finished
+      ? `Run complete — ${new Date(run.started).toLocaleTimeString()}`
+      : total > 0 ? "Running…" : "Waiting for test run…";
+
+    document.getElementById("runMeta").textContent =
+      run.started ? `Started: ${new Date(run.started).toLocaleTimeString()}` : "";
+
+    if (tests.length === 0) return;
+
+    // Table rows
+    const rows = tests.map(t => {
+      const catClass = t.category ? (CAT_CLASS[t.category] || "") : "";
+      const catEmoji = t.category ? (CAT_EMOJI[t.category] || "") : "";
+      return `
+        <tr>
+          <td><span class="tc-id">${t.id || "—"}</span></td>
+          <td>
+            <div class="tc-name">${t.name || ""}</div>
+            ${t.actual ? `<div class="tc-sub">${t.actual}</div>` : ""}
+          </td>
+          <td>${STATUS_HTML[t.status] || STATUS_HTML.pending}</td>
+          <td>${t.category
+            ? `<span class="cat ${catClass}">${catEmoji} ${t.category}</span>`
+            : `<span class="dash">—</span>`}</td>
+          <td>${t.jiraUrl
+            ? `<a class="jira-link" href="${t.jiraUrl}" target="_blank">🎫 ${t.jiraUrl.split("/browse/")[1] || "View"}</a>`
+            : `<span class="dash">—</span>`}</td>
+        </tr>`;
+    }).join("");
+
+    document.getElementById("tableBody").innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th width="80">ID</th>
+            <th>Test Name / Actual</th>
+            <th width="185">Status</th>
+            <th width="155">AI Category</th>
+            <th width="130">Jira Ticket</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  // SSE connection
+  const es = new EventSource("/stream");
+  es.onmessage = e => { try { render(JSON.parse(e.data)); } catch (_) {} };
+  es.onerror   = () => {
+    document.getElementById("liveLabel").textContent = "Reconnecting…";
+    document.getElementById("dot").className = "dot";
+  };
+
+  // ── Chat Agent ──────────────────────────────────────────────────────────────
+  let chatBusy = false;
+  let logBubble = null;
+
+  function scrollChat() {
+    const el = document.getElementById("chatMessages");
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function addMsg(role, text, extraClass = "") {
+    const box  = document.getElementById("chatMessages");
+    const div  = document.createElement("div");
+    div.className = `msg ${role}`;
+    const avatar = role === "user" ? "👤" : role === "log" ? "" : "🤖";
+    div.innerHTML = `
+      ${role !== "log" ? `<div class="msg-avatar">${avatar}</div>` : ""}
+      <div class="msg-bubble ${extraClass}">${text}</div>`;
+    box.appendChild(div);
+    scrollChat();
+    return div.querySelector(".msg-bubble");
+  }
+
+  function addTyping() {
+    const box = document.getElementById("chatMessages");
+    const div = document.createElement("div");
+    div.id = "typingIndicator";
+    div.className = "msg agent";
+    div.innerHTML = `<div class="msg-avatar">🤖</div>
+      <div class="msg-bubble"><div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div></div>`;
+    box.appendChild(div);
+    scrollChat();
+  }
+
+  function removeTyping() {
+    const t = document.getElementById("typingIndicator");
+    if (t) t.remove();
+  }
+
+  function setInputState(busy) {
+    chatBusy = busy;
+    document.getElementById("chatSend").disabled  = busy;
+    document.getElementById("chatInput").disabled = busy;
+  }
+
+  function sendChip(el) {
+    document.getElementById("chatInput").value = el.textContent.replace(/^[▶🔍🌐❓]\s*/, "").trim();
+    sendChat();
+  }
+
+  async function sendChat() {
+    if (chatBusy) return;
+    const input = document.getElementById("chatInput");
+    const msg   = input.value.trim();
+    if (!msg) return;
+
+    input.value = "";
+    addMsg("user", msg);
+    addTyping();
+    setInputState(true);
+    logBubble = null;
+
+    try {
+      const resp = await fetch("/chat", {
+        method:  "POST",
+        headers: { "Content-Type": "application/json" },
+        body:    JSON.stringify({ message: msg })
+      });
+
+      const reader  = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let   buffer  = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const lines = buffer.split("\n");
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          let chunk;
+          try { chunk = JSON.parse(line.slice(6)); } catch { continue; }
+
+          if (chunk.type === "thinking") {
+            removeTyping();
+            addTyping();
+
+          } else if (chunk.type === "reply") {
+            removeTyping();
+            addMsg("agent", chunk.text);
+
+          } else if (chunk.type === "info") {
+            addMsg("agent", chunk.text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>"), "info");
+
+          } else if (chunk.type === "log") {
+            removeTyping();
+            if (!logBubble) {
+              const wrap = document.createElement("div");
+              wrap.className = "msg log";
+              wrap.innerHTML = `<div class="msg-bubble"></div>`;
+              document.getElementById("chatMessages").appendChild(wrap);
+              logBubble = wrap.querySelector(".msg-bubble");
+            }
+            logBubble.textContent += chunk.text;
+            scrollChat();
+
+          } else if (chunk.type === "success") {
+            logBubble = null;
+            addMsg("agent", chunk.text, "success");
+
+          } else if (chunk.type === "error") {
+            logBubble = null;
+            addMsg("agent", chunk.text, "error");
+
+          } else if (chunk.type === "done") {
+            removeTyping();
+            setInputState(false);
+            document.getElementById("chatInput").focus();
+          }
+        }
+      }
+    } catch (err) {
+      removeTyping();
+      addMsg("agent", `⚠️ Connection error: ${err.message}`, "error");
+    }
+
+    setInputState(false);
+    document.getElementById("chatInput").focus();
+  }
+
+  // ── Tab switching ────────────────────────────────────────────────────────────
+  function switchTab(name, btn) {
+    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("tab-" + name).classList.add("active");
+    if (name === "suites") loadSuites();
+  }
+
+  // ── Load and render Test Suites ──────────────────────────────────────────────
+  async function loadSuites() {
+    const el = document.getElementById("suitesContent");
+    el.innerHTML = `<div class="suites-loading">⏳ Loading test suites…</div>`;
+    try {
+      const data = await fetch("/history").then(r => r.json());
+      if (!data.length) {
+        el.innerHTML = `<div class="suites-empty">
+          <div style="font-size:2rem;margin-bottom:12px">📭</div>
+          <div>No test suites yet.</div>
+          <div style="margin-top:8px;font-size:0.78rem;color:#484f58">Try: <em>"generate 6 tests for https://myntra.com"</em> in the chat above</div>
+        </div>`;
+        return;
+      }
+      el.innerHTML = data.map(site => {
+        const lastRaw = site.lastTested ? new Date(site.lastTested) : null;
+        const lastStr = lastRaw ? lastRaw.toLocaleDateString("en-IN", { day:"numeric", month:"short", year:"numeric" }) : "Never";
+        const lastSum = site.lastSummary;
+        const badge   = lastSum
+          ? `<span style="font-size:0.72rem;color:#3fb950">✅${lastSum.passed}</span> <span style="font-size:0.72rem;color:#f85149">❌${lastSum.failed}</span>`
+          : "";
+
+        const sprintsHtml = (site.sprints || []).map(sp => {
+          const dateStr = sp.generatedAt
+            ? new Date(sp.generatedAt).toLocaleDateString("en-IN",{day:"numeric",month:"short"})
+            : "";
+          const sourceIcon = sp.source === "user-story" ? "📋" : sp.source === "manual" ? "📝" : "🤖";
+          const runsHtml = (sp.runs || []).slice(0, 3).map(r => {
+            const rDate = r.timestamp ? new Date(r.timestamp).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"}) : "";
+            const cls   = r.failed > 0 ? "failed" : "passed";
+            return `<span class="run-chip ${cls}">✅${r.passed || 0} ❌${r.failed || 0} · ${rDate}</span>`;
+          }).join("");
+          return `<div class="sprint-row">
+            <div class="sprint-info">
+              <div class="sprint-name">${sourceIcon} ${sp.sprint}</div>
+              <div class="sprint-sub">${sp.count} test cases · ${dateStr} · ${sp.runCount || 0} run(s)</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <div class="sprint-runs">${runsHtml}</div>
+              <button class="rerun-btn" onclick="rerunSuite('${site.domain}','${sp.sprint}')">▶ Rerun</button>
+            </div>
+          </div>`;
+        }).join("");
+
+        return `<div class="suite-site">
+          <div class="suite-site-header" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'':'none'">
+            <div>
+              <div class="suite-domain">🌐 ${site.domain}</div>
+              <div class="suite-meta">${site.totalRuns || 0} total runs · Last: ${lastStr} &nbsp; ${badge}</div>
+            </div>
+            <span style="color:#6e7681;font-size:0.75rem">${(site.sprints||[]).length} sprint(s) ▾</span>
+          </div>
+          <div class="suite-sprints">${sprintsHtml || '<div style="color:#6e7681;font-size:0.8rem">No sprints yet</div>'}</div>
+        </div>`;
+      }).join("");
+    } catch (err) {
+      el.innerHTML = `<div class="suites-empty">⚠️ Could not load history: ${err.message}</div>`;
+    }
+  }
+
+  // ── Rerun a saved test suite ─────────────────────────────────────────────────
+  function rerunSuite(domain, sprint) {
+    // Switch to live tab and trigger the run via chat
+    switchTab("live", document.querySelectorAll(".tab-btn")[0]);
+    const input = document.getElementById("chatInput");
+    input.value = `generate tests for https://${domain} --sprint ${sprint}`;
+    addMsg("user", `▶ Rerunning suite: ${domain} / ${sprint}`);
+    // Directly send a generate command
+    const msg = `generate tests for https://${domain}`;
+    addTyping();
+    setInputState(true);
+    logBubble = null;
+    fetch("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: msg }) })
+      .then(resp => {
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        function pump() {
+          return reader.read().then(({ value, done }) => {
+            if (done) { setInputState(false); return; }
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n"); buffer = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith("data: ")) continue;
+              try {
+                const chunk = JSON.parse(line.slice(6));
+                if (chunk.type === "reply") { removeTyping(); addMsg("agent", chunk.text); }
+                else if (chunk.type === "log") { removeTyping(); if (!logBubble) { const w = document.createElement("div"); w.className="msg log"; w.innerHTML=`<div class="msg-bubble"></div>`; document.getElementById("chatMessages").appendChild(w); logBubble=w.querySelector(".msg-bubble"); } logBubble.textContent += chunk.text; scrollChat(); }
+                else if (chunk.type === "success") { logBubble=null; addMsg("agent",chunk.text,"success"); }
+                else if (chunk.type === "error")   { logBubble=null; addMsg("agent",chunk.text,"error"); }
+                else if (chunk.type === "done")    { removeTyping(); setInputState(false); }
+              } catch(_) {}
+            }
+            return pump();
+          });
+        }
+        return pump();
+      })
+      .catch(err => { removeTyping(); addMsg("agent", `⚠️ ${err.message}`, "error"); setInputState(false); });
+    input.value = "";
+  }
+</script>
+</body>
+</html>

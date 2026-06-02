@@ -1,128 +1,206 @@
 require("dotenv").config();
+const Groq                   = require("groq-sdk");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
+const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
+const geminiModels = [
+  genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),
+  genAI.getGenerativeModel({ model: "gemini-1.5-flash" }),
+];
 
 const JIRA_AUTH = Buffer.from(
   `${process.env.JIRA_EMAIL}:${process.env.JIRA_API_TOKEN}`
 ).toString("base64");
 
+// ── Jira via PowerShell (uses Windows native HTTP + system proxy) ─────────────
+const fs   = require("fs");
+const os   = require("os");
+const path = require("path");
+const { execSync } = require("child_process");
+
+async function postJiraPS(fields) {
+  const url = `${process.env.JIRA_BASE_URL}/rest/api/3/issue`;
+  const ts  = Date.now();
+  const tmpBody   = path.join(os.tmpdir(), `jira_body_${ts}.json`);
+  const tmpScript = path.join(os.tmpdir(), `jira_run_${ts}.ps1`);
+  const tmpOut    = path.join(os.tmpdir(), `jira_out_${ts}.txt`);
+
+  fs.writeFileSync(tmpBody, JSON.stringify({ fields }), "utf8");
+
+  const script = `
+$ErrorActionPreference = 'Stop'
+$headers = @{ Authorization='Basic ${JIRA_AUTH}'; Accept='application/json' }
+try {
+  $r = Invoke-RestMethod -Uri '${url}' -Method POST -Headers $headers \`
+       -InFile '${tmpBody.replace(/\\/g, "/")}' -ContentType 'application/json'
+  $r.key | Out-File '${tmpOut.replace(/\\/g, "/")}' -Encoding utf8 -NoNewline
+} catch {
+  $code = [int]$_.Exception.Response.StatusCode
+  $body = ''
+  try { $body = $_.ErrorDetails.Message } catch {}
+  "$code::$body" | Out-File '${tmpOut.replace(/\\/g, "/")}' -Encoding utf8 -NoNewline
+  exit 1
+}`.trim();
+
+  fs.writeFileSync(tmpScript, script, "utf8");
+
+  try {
+    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tmpScript}"`, {
+      encoding: "utf8", timeout: 30000
+    });
+    const key = fs.readFileSync(tmpOut, "utf8").trim();
+    return key;
+  } catch {
+    const out = fs.existsSync(tmpOut) ? fs.readFileSync(tmpOut, "utf8").trim() : "no output";
+    throw new Error(out);
+  } finally {
+    [tmpBody, tmpScript, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch (_) {} });
+  }
+}
+
 // ── Category config ───────────────────────────────────────────────────────────
 const CATEGORY_CONFIG = {
-  Security:    { priority: "Highest", emoji: "🔴", logToJira: true  },
-  Backend:     { priority: "High",    emoji: "🟠", logToJira: true  },
-  Frontend:    { priority: "Medium",  emoji: "🟡", logToJira: true  },
-  Performance: { priority: "Medium",  emoji: "🔵", logToJira: true  },
-  Trivial:     { priority: "Low",     emoji: "⚪", logToJira: false }
+  Security:    { priority: "Highest", emoji: "🔴", logToJira: true,  dueDays: 3,  storyPoints: 8 },
+  Backend:     { priority: "High",    emoji: "🟠", logToJira: true,  dueDays: 7,  storyPoints: 5 },
+  Frontend:    { priority: "Medium",  emoji: "🟡", logToJira: true,  dueDays: 14, storyPoints: 3 },
+  Performance: { priority: "Medium",  emoji: "🔵", logToJira: true,  dueDays: 14, storyPoints: 3 },
+  Trivial:     { priority: "Low",     emoji: "⚪", logToJira: false, dueDays: 30, storyPoints: 1 }
 };
 
-// ── Rule-based classifier (fallback when Gemini is unavailable) ───────────────
-function classifyByRules(field, message) {
-  const text = `${field} ${message}`.toLowerCase();
+// ── Fetch Jira context (assignee + active sprint) once at first ticket ─────────
+let _jiraAccountId  = process.env.JIRA_ACCOUNT_ID || null;
+let _jiraSprintId   = null;
+let _jiraContextDone = false;
 
-  // Security: password, card, auth, data exposure
-  if (
-    text.includes("password") || text.includes("plain text") ||
-    text.includes("masked")   || text.includes("card") ||
-    text.includes("security") || text.includes("auth") ||
-    text.includes("exposed")  || text.includes("cvv")
-  ) {
-    return {
-      category: "Security",
-      classificationReason: "Rule match: contains password/card/auth keyword — potential data exposure"
-    };
-  }
+async function loadJiraContext() {
+  if (_jiraContextDone) return;
+  _jiraContextDone = true;
 
-  // Performance: sort, algorithm, string comparison
-  if (
-    text.includes("sort")        || text.includes("string instead") ||
-    text.includes("performance") || text.includes("alphabetically") ||
-    text.includes("algorithm")   || text.includes("recalculate")
-  ) {
-    return {
-      category: "Performance",
-      classificationReason: "Rule match: sorting or algorithmic inefficiency detected"
-    };
-  }
+  const ts  = Date.now();
+  const ps1 = path.join(os.tmpdir(), `jira_ctx_${ts}.ps1`);
+  const out = path.join(os.tmpdir(), `jira_ctx_out_${ts}.txt`);
 
-  // Backend: calculation, validation, logic, server
-  if (
-    text.includes("total")      || text.includes("calculation") ||
-    text.includes("checkout")   || text.includes("coupon") ||
-    text.includes("validation") || text.includes("empty cart") ||
-    text.includes("shipping")   || text.includes("accepts")
-  ) {
-    return {
-      category: "Backend",
-      classificationReason: "Rule match: logic/calculation or missing validation error"
-    };
-  }
+  fs.writeFileSync(ps1, `
+$ErrorActionPreference = 'SilentlyContinue'
+$h = @{ Authorization='Basic ${JIRA_AUTH}'; Accept='application/json' }
+$me  = Invoke-RestMethod -Uri '${process.env.JIRA_BASE_URL}/rest/api/3/myself' -Headers $h
+$spr = Invoke-RestMethod -Uri '${process.env.JIRA_BASE_URL}/rest/agile/1.0/board/1/sprint?state=active&maxResults=1' -Headers $h
+$sid = if ($spr.values.Count -gt 0) { $spr.values[0].id } else { '' }
+"$($me.accountId)|$sid" | Out-File '${out.replace(/\\/g,"/")}' -Encoding utf8 -NoNewline
+`.trim(), "utf8");
 
-  // Trivial: cosmetic, badge, minor
-  if (
-    text.includes("badge")   || text.includes("cosmetic") ||
-    text.includes("colour")  || text.includes("spacing") ||
-    text.includes("typo")    || text.includes("label")
-  ) {
-    return {
-      category: "Trivial",
-      classificationReason: "Rule match: cosmetic or low-impact UI issue"
-    };
-  }
+  try {
+    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${ps1}"`, { timeout: 10000 });
+    const [acct, sprint] = fs.readFileSync(out, "utf8").trim().split("|");
+    if (acct)   _jiraAccountId = acct.trim();
+    if (sprint) _jiraSprintId  = parseInt(sprint.trim());
+    if (_jiraAccountId) console.log(`   👤 Jira assignee: ${_jiraAccountId}`);
+    if (_jiraSprintId)  console.log(`   🏃 Active sprint: ${_jiraSprintId}`);
+  } catch (_) {}
+  finally { [ps1, out].forEach(f => { try { fs.unlinkSync(f); } catch (_) {} }); }
+}
 
-  // Default → Frontend
+// ── Rich ADF description builder ──────────────────────────────────────────────
+function buildADF({ title, testCase, area, category, expected, actual, classificationReason, brokenCode, fixes }) {
+  const emoji = (CATEGORY_CONFIG[category] || {}).emoji || "🐛";
+
+  const p  = (txt) => ({ type: "paragraph", content: [{ type: "text", text: String(txt || "—") }] });
+  const h  = (lvl, txt) => ({ type: "heading", attrs: { level: lvl }, content: [{ type: "text", text: txt }] });
+  const hr = () => ({ type: "rule" });
+  const row = (label, value) => ({
+    type: "tableRow",
+    content: [
+      { type: "tableHeader", attrs: {}, content: [p(label)] },
+      { type: "tableCell",   attrs: {}, content: [p(value)] }
+    ]
+  });
+  const table = (rows) => ({
+    type: "table",
+    attrs: { isNumberColumnEnabled: false, layout: "default" },
+    content: rows
+  });
+  const bullets = (items) => ({
+    type: "bulletList",
+    content: (items || []).map(item => ({
+      type: "listItem",
+      content: [p(item)]
+    }))
+  });
+
   return {
-    category: "Frontend",
-    classificationReason: "Rule match: defaulted to Frontend — UI or display issue"
+    type: "doc", version: 1,
+    content: [
+      h(2, `${emoji} ${title}`),
+      hr(),
+      h(3, "📋 Test Details"),
+      table([
+        row("Test Case ID",         testCase  || "—"),
+        row("Area",                 area      || category || "—"),
+        row("Severity",             "🔴 ERROR"),
+        row("Category",             `${emoji} ${category}`),
+        row("Expected Behaviour",   expected  || "—"),
+        row("Actual Behaviour",     actual    || "—"),
+      ]),
+      h(3, "🤖 AI Classification"),
+      p(classificationReason || "—"),
+      h(3, "🔧 Root Cause"),
+      p(brokenCode || "—"),
+      h(3, "✅ Suggested Fixes"),
+      bullets(fixes && fixes.length ? fixes : ["Review and fix the identified issue."]),
+      hr(),
+      p(`Auto-detected by DemoShop AI Bug Pipeline on ${new Date().toLocaleString()}`)
+    ]
   };
 }
 
 // ── Jira ticket creator ───────────────────────────────────────────────────────
-async function createJiraTicket({ title, description, priority, labels }) {
-  const url = `${process.env.JIRA_BASE_URL}/rest/api/3/issue`;
+async function createJiraTicket({ title, adfDescription, priority, labels, category, dueDays, storyPoints }) {
+  await loadJiraContext();
 
-  const body = {
-    fields: {
-      project:     { key: process.env.JIRA_PROJECT_KEY },
-      summary:     title,
-      description: {
-        type: "doc", version: 1,
-        content: [{
-          type: "paragraph",
-          content: [{ type: "text", text: description }]
-        }]
-      },
-      issuetype: { name: "Bug" },
-      priority:  { name: priority },
-      labels,
-      assignee:  { accountId: process.env.JIRA_ACCOUNT_ID }
-    }
+  const dueDate = new Date();
+  dueDate.setDate(dueDate.getDate() + (dueDays || 14));
+  const dueDateStr = dueDate.toISOString().split("T")[0];
+
+  const base = {
+    project:     { key: process.env.JIRA_PROJECT_KEY },
+    summary:     title,
+    description: adfDescription,
+    duedate:     dueDateStr,
+    customfield_10016: storyPoints || 3,   // Story point estimate
+    labels
   };
 
-  const res = await fetch(url, {
-    method:  "POST",
-    headers: {
-      "Authorization": `Basic ${JIRA_AUTH}`,
-      "Content-Type":  "application/json",
-      "Accept":        "application/json"
-    },
-    body: JSON.stringify(body)
-  });
+  if (_jiraAccountId) base.assignee = { accountId: _jiraAccountId };
+  if (_jiraSprintId)  base.customfield_10020 = { id: _jiraSprintId };
 
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Jira ${res.status}: ${err}`);
+  const attempts = [
+    { ...base, issuetype: { name: "Bug"  }, priority: { name: priority } },
+    { ...base, issuetype: { name: "Task" }, priority: { name: priority } },
+    { ...base, issuetype: { name: "Bug"  }, priority: { name: priority }, customfield_10016: undefined, customfield_10020: undefined },
+    { ...base, issuetype: { name: "Task" }, customfield_10016: undefined, customfield_10020: undefined },
+    { project: base.project, summary: base.summary, description: base.description, issuetype: { name: "Task" } },
+  ];
+
+  let lastErr = "";
+  for (const fields of attempts) {
+    try {
+      const key = await postJiraPS(fields);
+      const ticketUrl = `${process.env.JIRA_BASE_URL}/browse/${key}`;
+      console.log(`   🎫 Jira ticket created: ${key} → ${ticketUrl}`);
+      return ticketUrl;
+    } catch (err) {
+      lastErr = err.message;
+      const status = lastErr.split("::")[0];
+      if (status === "401" || status === "403") {
+        console.log(`   ❌ Jira auth failed — check JIRA_EMAIL and JIRA_API_TOKEN in .env`);
+        break;
+      }
+      console.log(`   ↩️  Retrying with simpler fields…`);
+    }
   }
 
-  const data = await res.json();
-  const ticketUrl = `${process.env.JIRA_BASE_URL}/browse/${data.key}`;
-  console.log(`   🎫 Jira ticket created: ${data.key} → ${ticketUrl}`);
-  return ticketUrl;
-}
-
-function buildSentryUrl(issueId) {
-  return `https://${process.env.SENTRY_ORG_SLUG}.sentry.io/issues/${issueId}/`;
+  throw new Error(`Jira failed — ${lastErr.slice(0, 200)}`);
 }
 
 function getAgingInfo(firstSeen, level) {
@@ -131,22 +209,176 @@ function getAgingInfo(firstSeen, level) {
   return { daysOld, isUrgent };
 }
 
-// ── Main pipeline ─────────────────────────────────────────────────────────────
-async function runAutomation(sentryPayload) {
-  const issue      = sentryPayload.data?.issue || sentryPayload;
+// ── AI call: Groq primary → Gemini fallback ───────────────────────────────────
+async function generateWithRetry(prompt, maxRetries = 4) {
+  // Try Groq first (higher quota, faster)
+  try {
+    const response = await groq.chat.completions.create({
+      messages: [{ role: "user", content: prompt }],
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.1,
+      response_format: { type: "json_object" }
+    });
+    console.log("   🟢 Provider: Groq (Llama 3.3 70B)");
+    return response.choices[0].message.content;
+  } catch (groqErr) {
+    const blocked = groqErr.status === 403 || groqErr.message?.includes("403") || groqErr.message?.includes("blocked");
+    const groqMsg = blocked ? "blocked by network" : groqErr.message;
+    console.log(`   ⚠️  Groq unavailable (${groqMsg}) — falling back to Gemini…`);
+  }
+
+  // Fallback: try gemini-2.5-flash first, then gemini-1.5-flash if quota exceeded
+  const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
+  for (let m = 0; m < geminiModels.length; m++) {
+    const model = geminiModels[m];
+    const modelName = modelNames[m];
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await model.generateContent(prompt);
+        console.log(`   🔵 Provider: ${modelName} (fallback)`);
+        return result.response.text().trim()
+          .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+      } catch (err) {
+        const isQuota   = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
+        const is429     = err.message?.includes("429");
+        const is503     = err.message?.includes("503");
+        const isRetryable = (is429 || is503) && !isQuota;
+
+        if (isQuota) {
+          console.log(`   ⚠️  ${modelName} quota exhausted — switching to next model…`);
+          break;
+        }
+
+        if (!isRetryable || attempt === maxRetries) {
+          console.log(`   ❌ ${modelName} failed (attempt ${attempt}): ${err.message}`);
+          if (m === geminiModels.length - 1) throw err;
+          break;
+        }
+
+        const match  = err.message.match(/retry in (\d+(?:\.\d+)?)s/i);
+        const waitMs = is503 ? 15000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 30000);
+        console.log(`   ⏳ ${modelName} ${is503 ? "overloaded" : "rate limited"} — waiting ${Math.ceil(waitMs / 1000)}s then retrying (${attempt}/${maxRetries})…`);
+        await new Promise(r => setTimeout(r, waitMs));
+      }
+    }
+  }
+
+  throw new Error("All Gemini models exhausted");
+}
+
+// ── BATCH pipeline — ONE Groq call for ALL failures ──────────────────────────
+// failures: [{ id, title, errorType, errorValue, culprit, expected, area, testCase }]
+// onResult(result) is called immediately after each ticket is created/skipped
+async function runBatchAutomation(failures, onResult = null) {
+  if (failures.length === 0) return [];
+
+  console.log(`\n🤖 Sending ${failures.length} failure(s) to Groq AI for batch classification…\n`);
+
+  const prompt = `
+You are a senior QA engineer. Classify ALL of these failing test cases from a DemoShop e-commerce app in ONE response.
+
+Categories:
+- Security    → password exposure, card data issues, auth bypass, data leaks
+- Backend     → wrong calculations, logic errors, missing validation
+- Frontend    → UI display bugs, broken labels, wrong counts, case-sensitivity
+- Performance → inefficient algorithms, wrong sort methods
+- Trivial     → cosmetic issues, minor text errors
+
+Test cases to classify:
+${failures.map((f, i) => `
+[${i + 1}] ID: ${f.id}
+    Name    : ${f.title}
+    Expected: ${f.expected}
+    Actual  : ${f.errorValue}
+    Location: ${f.culprit}
+`).join("")}
+
+Reply ONLY with a valid JSON object containing a "results" array:
+{
+  "results": [
+    {
+      "id": "TC-XX",
+      "category": "Security|Backend|Frontend|Performance|Trivial",
+      "classificationReason": "One sentence explaining why",
+      "brokenCode": "One sentence describing the broken code",
+      "fixes": ["Fix 1", "Fix 2", "Fix 3"],
+      "emailBody": "Professional 2-sentence summary for the dev team"
+    }
+  ]
+}`;
+
+  const rawText = (await generateWithRetry(prompt)).trim()
+    .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+  const parsed = JSON.parse(rawText);
+  const classifications = parsed.results ?? parsed;
+
+  const output = [];
+
+  for (const ai of classifications) {
+    const failure = failures.find(f => f.id === ai.id);
+    if (!failure) continue;
+
+    if (!CATEGORY_CONFIG[ai.category]) ai.category = "Frontend";
+    const catConfig = CATEGORY_CONFIG[ai.category];
+
+    console.log(`   ${catConfig.emoji} ${ai.id} → ${ai.category}: ${ai.classificationReason}`);
+
+    if (!catConfig.logToJira) {
+      console.log(`   ⏭️  ${ai.id}: Trivial — skipping Jira`);
+      const item = { id: ai.id, logged: false, category: ai.category, reason: ai.classificationReason, jiraUrl: null };
+      output.push(item);
+      if (onResult) await onResult(item);
+      continue;
+    }
+
+    try {
+      const jiraUrl = await createJiraTicket({
+        title:          `[${ai.category.toUpperCase()}] ${failure.title}`,
+        adfDescription: buildADF({
+          title:                failure.title,
+          testCase:             failure.testCase || failure.id,
+          area:                 failure.area || ai.category,
+          category:             ai.category,
+          expected:             failure.expected,
+          actual:               failure.errorValue,
+          classificationReason: ai.classificationReason,
+          brokenCode:           ai.brokenCode,
+          fixes:                ai.fixes
+        }),
+        priority:        catConfig.priority,
+        labels:          ["bug", "demoshop", ai.category.toLowerCase()],
+        category:        ai.category,
+        dueDays:         catConfig.dueDays,
+        storyPoints:     catConfig.storyPoints
+      });
+      const item = { id: ai.id, logged: true, category: ai.category, reason: ai.classificationReason, jiraUrl, fixes: ai.fixes };
+      output.push(item);
+      if (onResult) await onResult(item);
+    } catch (err) {
+      console.log(`   ⚠️  Jira error for ${ai.id}: ${err.message}`);
+      const item = { id: ai.id, logged: false, category: ai.category, reason: ai.classificationReason, jiraUrl: null };
+      output.push(item);
+      if (onResult) await onResult(item);
+    }
+  }
+
+  return output;
+}
+
+// ── Single pipeline (used by playwright-runner & generate-tests) ──────────────
+async function runAutomation(payload) {
+  const issue      = payload.data?.issue || payload;
   const errorTitle = issue.title       || "Unknown Error";
   const errorLevel = issue.level       || "error";
   const culprit    = issue.culprit     || "Unknown location";
   const firstSeen  = issue.firstSeen   || new Date().toISOString();
-  const issueId    = issue.id          || "";
-  const sentryUrl  = issue.permalink   || buildSentryUrl(issueId);
   const errorType  = issue.metadata?.type  || errorTitle;
   const errorValue = issue.metadata?.value || "";
   const project    = issue.project?.name   || "DemoShop";
 
   const { daysOld, isUrgent } = getAgingInfo(firstSeen, errorLevel);
 
-  // ── Step 1: Gemini — Classify + Analyse (single API call) ────────────────
   const prompt = `
 You are a senior QA engineer reviewing a bug report from an e-commerce app.
 
@@ -172,77 +404,51 @@ Reply ONLY with valid JSON (no markdown, no code fences):
   "emailBody": "Professional 2-sentence summary of this bug for the dev team"
 }`;
 
-  // Fallback values if Gemini is unavailable
-  let ai = {
-    category: "Frontend",
-    classificationReason: "Could not classify — Gemini unavailable, defaulting to Frontend",
-    brokenCode: `Error in ${culprit}: ${errorValue || errorTitle}`,
-    fixes: [
-      "Review and add input validation at the culprit location",
-      "Add try/catch error handling around the failing operation",
-      "Write a unit test to cover this edge case"
-    ],
-    emailBody: `A ${errorLevel}-level error "${errorTitle}" was detected in ${project}. Please review the Jira ticket for full context.`
-  };
+  const rawText = (await generateWithRetry(prompt)).trim()
+    .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+  const parsed  = JSON.parse(rawText);
 
-  try {
-    // Try Gemini AI classification first
-    const result  = await model.generateContent(prompt);
-    const rawText = result.response.text().trim()
-      .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
-    const parsed  = JSON.parse(rawText);
-
-    // Ensure category is valid
-    if (!CATEGORY_CONFIG[parsed.category]) parsed.category = "Frontend";
-    ai = parsed;
-    console.log(`   🤖 Classified by: Gemini AI`);
-  } catch (_) {
-    // Gemini unavailable — use rule-based classifier
-    const ruled = classifyByRules(culprit, errorTitle);
-    ai.category              = ruled.category;
-    ai.classificationReason  = ruled.classificationReason;
-    console.log(`   📏 Classified by: Rule-based system (Gemini unavailable)`);
-  }
+  if (!CATEGORY_CONFIG[parsed.category]) parsed.category = "Frontend";
+  const ai = parsed;
+  console.log(`   🤖 AI classification complete`);
 
   const catConfig = CATEGORY_CONFIG[ai.category] || CATEGORY_CONFIG.Frontend;
-
-  // ── Step 2: Classification decision ──────────────────────────────────────
   console.log(`   ${catConfig.emoji} Category : ${ai.category}`);
   console.log(`   📋 Reason   : ${ai.classificationReason}`);
 
   if (!catConfig.logToJira) {
-    console.log(`   ⏭️  Skipping Jira — Trivial bug (captured in Sentry only)`);
-    return;
+    console.log(`   ⏭️  Skipping Jira — Trivial bug`);
+    return { logged: false, category: ai.category, reason: ai.classificationReason, jiraUrl: null };
   }
 
-  console.log(`   ✅ Logging to Jira (category: ${ai.category})`);
-
-  // ── Step 3: Create Jira ticket ────────────────────────────────────────────
   const priority = isUrgent ? "Highest" : catConfig.priority;
-  const labels   = ["bug", "sentry", ai.category.toLowerCase(), ...(isUrgent ? ["URGENT"] : [])];
-
-  const jiraDesc =
-    `SENTRY ISSUE: ${errorTitle}\n\n` +
-    `Error      : ${errorValue}\n` +
-    `Location   : ${culprit}\n` +
-    `Severity   : ${errorLevel.toUpperCase()}\n` +
-    `Category   : ${ai.category}\n` +
-    `First seen : ${firstSeen} (${daysOld} days ago)\n` +
-    `Sentry URL : ${sentryUrl}\n\n` +
-    `AI CLASSIFICATION:\n${ai.classificationReason}\n\n` +
-    `BROKEN CODE:\n${ai.brokenCode}\n\n` +
-    `SUGGESTED FIXES:\n${ai.fixes.map((f, i) => `${i + 1}. ${f}`).join("\n")}`;
+  const labels   = ["bug", "demoshop", ai.category.toLowerCase(), ...(isUrgent ? ["URGENT"] : [])];
 
   try {
-    await createJiraTicket({
-      title:       `[${ai.category.toUpperCase()}] ${errorTitle}`,
-      description: jiraDesc,
+    const jiraUrl = await createJiraTicket({
+      title:          `[${ai.category.toUpperCase()}] ${errorTitle}`,
+      adfDescription: buildADF({
+        title:                errorTitle,
+        testCase:             issue.metadata?.testCase || culprit,
+        area:                 issue.metadata?.area || ai.category,
+        category:             ai.category,
+        expected:             issue.metadata?.expected || "See test case",
+        actual:               errorValue,
+        classificationReason: ai.classificationReason,
+        brokenCode:           ai.brokenCode,
+        fixes:                ai.fixes
+      }),
       priority,
-      labels
+      labels,
+      category:    ai.category,
+      dueDays:     catConfig.dueDays,
+      storyPoints: catConfig.storyPoints
     });
-  } catch (_) {
-    // Jira unavailable — skipped silently
+    return { logged: true, category: ai.category, reason: ai.classificationReason, jiraUrl, fixes: ai.fixes };
+  } catch (err) {
+    console.log(`   ⚠️  Jira error: ${err.message}`);
+    return { logged: false, category: ai.category, reason: ai.classificationReason, jiraUrl: null };
   }
 }
 
-module.exports = { runAutomation };
+module.exports = { runAutomation, runBatchAutomation };
