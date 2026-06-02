@@ -1,8 +1,6 @@
 require("dotenv").config();
-const Groq                   = require("groq-sdk");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const geminiModels = [
   genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),
@@ -209,25 +207,9 @@ function getAgingInfo(firstSeen, level) {
   return { daysOld, isUrgent };
 }
 
-// ── AI call: Groq primary → Gemini fallback ───────────────────────────────────
+// ── AI call: Gemini only ──────────────────────────────────────────────────────
 async function generateWithRetry(prompt, maxRetries = 4) {
-  // Try Groq first (higher quota, faster)
-  try {
-    const response = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    });
-    console.log("   🟢 Provider: Groq (Llama 3.3 70B)");
-    return response.choices[0].message.content;
-  } catch (groqErr) {
-    const blocked = groqErr.status === 403 || groqErr.message?.includes("403") || groqErr.message?.includes("blocked");
-    const groqMsg = blocked ? "blocked by network" : groqErr.message;
-    console.log(`   ⚠️  Groq unavailable (${groqMsg}) — falling back to Gemini…`);
-  }
-
-  // Fallback: try gemini-2.5-flash first, then gemini-1.5-flash if quota exceeded
+  // Try gemini-2.5-flash first, then gemini-1.5-flash if quota exceeded
   const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
   for (let m = 0; m < geminiModels.length; m++) {
     const model = geminiModels[m];
@@ -236,7 +218,7 @@ async function generateWithRetry(prompt, maxRetries = 4) {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const result = await model.generateContent(prompt);
-        console.log(`   🔵 Provider: ${modelName} (fallback)`);
+        console.log(`   🔵 Provider: ${modelName}`);
         return result.response.text().trim()
           .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
       } catch (err) {
@@ -267,13 +249,13 @@ async function generateWithRetry(prompt, maxRetries = 4) {
   throw new Error("All Gemini models exhausted");
 }
 
-// ── BATCH pipeline — ONE Groq call for ALL failures ──────────────────────────
+// ── BATCH pipeline — ONE Gemini call for ALL failures ──────────────────────────
 // failures: [{ id, title, errorType, errorValue, culprit, expected, area, testCase }]
 // onResult(result) is called immediately after each ticket is created/skipped
 async function runBatchAutomation(failures, onResult = null) {
   if (failures.length === 0) return [];
 
-  console.log(`\n🤖 Sending ${failures.length} failure(s) to Groq AI for batch classification…\n`);
+  console.log(`\n🤖 Sending ${failures.length} failure(s) to Gemini AI for batch classification…\n`);
 
   const prompt = `
 You are a senior QA engineer. Classify ALL of these failing test cases from a DemoShop e-commerce app in ONE response.

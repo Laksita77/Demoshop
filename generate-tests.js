@@ -1,13 +1,11 @@
 require("dotenv").config();
 const fs                     = require("fs");
 const path                   = require("path");
-const Groq                   = require("groq-sdk");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { runBatchAutomation } = require("./automation");
 const { getHtml, stripHtml, runCheck: execCheck } = require("./utils");
 const { saveTestCases, saveRunResult } = require("./storage");
 
-const groq         = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const genAI        = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const geminiModels = [
   genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),
@@ -81,51 +79,37 @@ Return a JSON object with a "testCases" array of EXACTLY ${TEST_COUNT || "8–12
 HTML:
 ${stripped}`;
 
-  console.log(`\n🤖 Sending ${SOURCE_LABEL} to AI for test case generation…\n`);
+  console.log(`\n🤖 Sending ${SOURCE_LABEL} to Gemini AI for test case generation…\n`);
 
   let rawText;
-  try {
-    const response = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    });
-    console.log("   🟢 Provider: Groq (Llama 3.3 70B)");
-    rawText = response.choices[0].message.content;
-  } catch (groqErr) {
-    const blocked = groqErr.status === 403 || groqErr.message?.includes("403") || groqErr.message?.includes("blocked");
-    console.log(`   ⚠️  Groq unavailable (${blocked ? "blocked by network" : groqErr.message}) — falling back to Gemini…`);
+  const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
+  for (let m = 0; m < geminiModels.length; m++) {
+    const model = geminiModels[m];
+    const modelName = modelNames[m];
+    let succeeded = false;
 
-    const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
-    for (let m = 0; m < geminiModels.length; m++) {
-      const model = geminiModels[m];
-      const modelName = modelNames[m];
-      let succeeded = false;
-
-      for (let attempt = 1; attempt <= 4; attempt++) {
-        try {
-          const result = await model.generateContent(prompt);
-          console.log(`   🔵 Provider: ${modelName} (fallback)`);
-          rawText = result.response.text();
-          succeeded = true;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const result = await model.generateContent(prompt);
+        console.log(`   🔵 Provider: ${modelName}`);
+        rawText = result.response.text();
+        succeeded = true;
+        break;
+      } catch (gemErr) {
+        const isQuota = gemErr.message?.includes("quota") || gemErr.message?.includes("RESOURCE_EXHAUSTED");
+        if (isQuota) {
+          console.log(`   ⚠️  ${modelName} quota exhausted — switching to next model…`);
           break;
-        } catch (gemErr) {
-          const isQuota = gemErr.message?.includes("quota") || gemErr.message?.includes("RESOURCE_EXHAUSTED");
-          if (isQuota) {
-            console.log(`   ⚠️  ${modelName} quota exhausted — switching to next model…`);
-            break;
-          }
-          const retryable = gemErr.message?.includes("503") || gemErr.message?.includes("429");
-          if (!retryable || attempt === 4) throw gemErr;
-          const match  = gemErr.message.match(/retry in (\d+(?:\.\d+)?)s/i);
-          const wait   = gemErr.message?.includes("503") ? 15000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 30000);
-          console.log(`   ⏳ ${modelName} busy — waiting ${Math.ceil(wait / 1000)}s then retrying (${attempt}/4)…`);
-          await new Promise(r => setTimeout(r, wait));
         }
+        const retryable = gemErr.message?.includes("503") || gemErr.message?.includes("429");
+        if (!retryable || attempt === 4) throw gemErr;
+        const match  = gemErr.message.match(/retry in (\d+(?:\.\d+)?)s/i);
+        const wait   = gemErr.message?.includes("503") ? 15000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 30000);
+        console.log(`   ⏳ ${modelName} busy — waiting ${Math.ceil(wait / 1000)}s then retrying (${attempt}/4)…`);
+        await new Promise(r => setTimeout(r, wait));
       }
-      if (succeeded) break;
     }
+    if (succeeded) break;
   }
 
   rawText = rawText.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
