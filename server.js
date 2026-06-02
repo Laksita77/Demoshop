@@ -139,7 +139,18 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── 4. Serve dashboard ───────────────────────────────────────────────────────
+  // ── 4. Serve chatbot ───────────────────────────────────────────────────────
+  if (req.method === "GET" && (req.url === "/chatbot" || req.url === "/chatbot.html")) {
+    const filePath = path.join(__dirname, "chatbot.html");
+    fs.readFile(filePath, (err, data) => {
+      if (err) { res.writeHead(500); res.end("Chatbot not found"); return; }
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end(data);
+    });
+    return;
+  }
+
+  // ── 5. Serve dashboard ───────────────────────────────────────────────────────
   if (req.method === "GET" && req.url === "/dashboard") {
     const filePath = path.join(__dirname, "dashboard.html");
     fs.readFile(filePath, (err, data) => {
@@ -150,7 +161,7 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── 5. Serve shop.html ──────────────────────────────────────────────────────
+  // ── 6. Serve shop.html ──────────────────────────────────────────────────────
   if (req.method === "GET" && (req.url === "/" || req.url === "/shop" || req.url === "/shop.html")) {
     const filePath = path.join(__dirname, "shop.html");
     fs.readFile(filePath, (err, data) => {
@@ -170,11 +181,12 @@ server.listen(PORT, () => {
   console.log("         DemoShop — Running             ");
   console.log("========================================");
   console.log(`   Shop      : http://localhost:${PORT}`);
+  console.log(`   Chatbot   : http://localhost:${PORT}/chatbot`);
   console.log(`   Dashboard : http://localhost:${PORT}/dashboard`);
   console.log(`   Gemini  : ${process.env.GEMINI_API_KEY ? "connected" : "not configured"}`);
   console.log(`   Jira    : ${process.env.JIRA_BASE_URL  ? "connected" : "not configured"}`);
   console.log("========================================\n");
 
   const { exec } = require("child_process");
-  exec(`start http://localhost:${PORT}`);
+  exec(`start http://localhost:${PORT}/chatbot`);
 });
