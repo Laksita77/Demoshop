@@ -1,0 +1,15 @@
+{
+  "domain": "snapdeal.com",
+  "sprints": [
+    "run-2026-05-27"
+  ],
+  "totalRuns": 1,
+  "lastTested": "2026-05-27T07:29:45.021Z",
+  "lastSummary": {
+    "passed": 5,
+    "failed": 1,
+    "total": 6,
+    "sprint": "run-2026-05-27",
+    "story": "�"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "domain": "snapdeal.com",
+  "sprint": "run-2026-05-27",
+  "generatedAt": "2026-05-27T07:29:44.865Z",
+  "count": 6,
+  "source": "user-story",
+  "url": "https://snapdeal.com",
+  "story": "�",
+  "testCases": [
+    {
+      "id": "US-01-01",
+      "area": "Frontend",
+      "name": "Verify search input field type is 'text'",
+      "expected": "The search input field should be present and have its 'type' attribute set to 'text'.",
+      "check": "attribute_value",
+      "elementId": "search-box-input",
+      "attribute": "type",
+      "expectedValue": "text"
+    },
+    {
+      "id": "US-01-02",
+      "area": "Frontend",
+      "name": "Verify 'Login' call-to-action is visible in the header",
+      "expected": "The header should contain a visible 'Login' text as a call-to-action.",
+      "check": "html_contains",
+      "value": "Login"
+    },
+    {
+      "id": "US-01-03",
+      "area": "Frontend",
+      "name": "Verify 'Men's Fashion' category is present in navigation",
+      "expected": "The category navigation strip should include 'Men's Fashion'.",
+      "check": "html_contains",
+      "value": "Men's Fashion"
+    },
+    {
+      "id": "US-01-04",
+      "area": "Frontend",
+      "name": "Verify 'Deal Of The Day' section title is present",
+      "expected": "A section titled 'Deal Of The Day' should be prominently displayed on the page.",
+      "check": "html_contains",
+      "value": "Deal Of The Day"
+    },
+    {
+      "id": "US-01-05",
+      "area": "Frontend",
+      "name": "Verify 'Download App' button is present in the header",
+      "expected": "The header should contain a button labeled 'Download App'.",
+      "check": "html_contains",
+      "value": "Download App"
+    },
+    {
+      "id": "US-01-06",
+      "area": "Frontend",
+      "name": "Verify copyright notice is present in the footer",
+      "expected": "The footer should contain the correct copyright statement.",
+      "check": "html_contains",
+      "value": "Copyright © 2021, AceVector Limited. All Rights Reserved"
+    }
+  ]
+}

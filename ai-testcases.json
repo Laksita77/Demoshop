@@ -1,0 +1,98 @@
+[
+  {
+    "id": "AI-01",
+    "area": "Security|Performance",
+    "name": "Correct protocol in dns-prefetch for Google Tag Manager",
+    "expected": "The dns-prefetch link for Google Tag Manager should use the 'https://' protocol to ensure secure and correct resource loading.",
+    "check": "html_not_contains",
+    "value": "<link rel=\"dns-prefetch preconnect\" href=\"https//www.googletagmanager.com\">"
+  },
+  {
+    "id": "AI-02",
+    "area": "Security|Performance",
+    "name": "Correct protocol in dns-prefetch for Google Analytics",
+    "expected": "The dns-prefetch link for Google Analytics should use the 'https://' protocol to ensure secure and correct resource loading.",
+    "check": "html_not_contains",
+    "value": "<link rel=\"dns-prefetch preconnect\" href=\"https//www.google-analytics.com\">"
+  },
+  {
+    "id": "AI-03",
+    "area": "Accessibility",
+    "name": "HTML lang attribute present",
+    "expected": "The <html> tag should specify the document language for improved accessibility and screen reader interpretation.",
+    "check": "html_contains",
+    "value": "<html lang=\"en\">"
+  },
+  {
+    "id": "AI-04",
+    "area": "Frontend|Accessibility",
+    "name": "Viewport meta tag for responsiveness",
+    "expected": "A properly configured viewport meta tag should be present for optimal responsive rendering across devices.",
+    "check": "html_contains",
+    "value": "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\"/>"
+  },
+  {
+    "id": "AI-05",
+    "area": "Security",
+    "name": "No plaintext password input types",
+    "expected": "Password input fields should never use type='text' as it exposes credentials. They should always be type='password'.",
+    "check": "html_not_contains",
+    "value": "<input type=\"text\" name=\"password\""
+  },
+  {
+    "id": "AI-06",
+    "area": "Frontend|Accessibility|Validation",
+    "name": "Expected search input with type and placeholder",
+    "expected": "A search input field (if present) should semantically use type='search' and ideally have a placeholder for user guidance.",
+    "check": "html_contains",
+    "value": "<input type=\"search\" placeholder="
+  },
+  {
+    "id": "AI-07",
+    "area": "Frontend|Validation",
+    "name": "Expected email input with type and required attribute",
+    "expected": "An email input field (if present) should use type='email' and include the 'required' attribute for client-side validation.",
+    "check": "html_contains",
+    "value": "<input type=\"email\" required"
+  },
+  {
+    "id": "AI-08",
+    "area": "Security|Frontend",
+    "name": "Expected password input with correct type and autocomplete",
+    "expected": "A password input field (if present) should use type='password' and specify 'autocomplete=\"current-password\"' for better security and user experience.",
+    "check": "html_contains",
+    "value": "<input type=\"password\" autocomplete=\"current-password\""
+  },
+  {
+    "id": "AI-09",
+    "area": "SEO",
+    "name": "Canonical link present",
+    "expected": "A canonical link should be present in the <head> to prevent duplicate content issues and improve SEO.",
+    "check": "html_contains",
+    "value": "<link rel=\"canonical\" href=\"https://www.myntra.com/\" />"
+  },
+  {
+    "id": "AI-10",
+    "area": "Frontend|Accessibility",
+    "name": "Apple touch icon present",
+    "expected": "An apple-touch-icon should be linked for improved PWA/bookmarking experience on iOS devices.",
+    "check": "html_contains",
+    "value": "<link rel=\"apple-touch-icon\""
+  },
+  {
+    "id": "AI-11",
+    "area": "Performance|Frontend",
+    "name": "Web App Manifest linked",
+    "expected": "A web app manifest file should be linked for Progressive Web App (PWA) features.",
+    "check": "html_contains",
+    "value": "<link rel=\"manifest\" href=\"/manifest.json\">"
+  },
+  {
+    "id": "AI-12",
+    "area": "SEO",
+    "name": "Meta description tag present and descriptive",
+    "expected": "A descriptive meta description tag should be present to provide a summary for search engine results pages.",
+    "check": "html_contains",
+    "value": "<meta name=\"description\" content=\"Online Shopping Site for Fashion & Lifestyle in India."
+  }
+]
