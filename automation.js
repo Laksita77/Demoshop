@@ -224,35 +224,52 @@ function saveToDedupCache(title, errorValue, jiraKey, jiraUrl, originalTitle, bu
   saveDedupCache(cache);
 }
 
-// ── Pending approvals (tester must approve before Jira ticket is created) ────
-const PENDING_APPROVALS_FILE = path.join(__dirname, "pending-approvals.json");
+// ── Pending approvals — self-contained signed tokens (no file storage) ───────
+// Bug data is encoded directly in the URL so Render restarts don't lose tokens.
 
-function loadPendingApprovals() {
+const TOKEN_SECRET = process.env.TOKEN_SECRET || process.env.GEMINI_API_KEY || "qa-pipeline-secret";
+
+function createApprovalToken(bugData) {
+  const payload = Buffer.from(JSON.stringify(bugData)).toString("base64url");
+  const sig     = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest("hex").slice(0, 16);
+  return `${payload}.${sig}`;
+}
+
+function verifyApprovalToken(token) {
+  try {
+    const [payload, sig] = token.split(".");
+    const expected = crypto.createHmac("sha256", TOKEN_SECRET).update(payload).digest("hex").slice(0, 16);
+    if (sig !== expected) return null;
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch (_) { return null; }
+}
+
+// Keep file-based store only to track already-processed tokens (prevent double-approve)
+const PENDING_APPROVALS_FILE = path.join(__dirname, "pending-approvals.json");
+function loadProcessedTokens() {
   try { return JSON.parse(fs.readFileSync(PENDING_APPROVALS_FILE, "utf8")); } catch (_) { return {}; }
 }
-function savePendingApprovals(data) {
-  try { fs.writeFileSync(PENDING_APPROVALS_FILE, JSON.stringify(data, null, 2), "utf8"); } catch (_) {}
+function markTokenProcessed(sig, status) {
+  const store = loadProcessedTokens();
+  store[sig] = { status, processedAt: new Date().toISOString() };
+  try { fs.writeFileSync(PENDING_APPROVALS_FILE, JSON.stringify(store, null, 2)); } catch (_) {}
 }
-function addPendingApproval(token, bugData) {
-  const approvals = loadPendingApprovals();
-  approvals[token] = {
-    status:    "pending",
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7-day expiry
-    bugData
-  };
-  savePendingApprovals(approvals);
+function isTokenProcessed(sig) {
+  return loadProcessedTokens()[sig] || null;
 }
+
+// Legacy wrappers kept so nothing else needs to change
+function addPendingApproval(token, bugData) { /* data is in the token itself now */ }
 function getPendingApproval(token) {
-  return loadPendingApprovals()[token] || null;
+  const bugData = verifyApprovalToken(token);
+  if (!bugData) return null;
+  const sig = token.split(".")[1];
+  const processed = isTokenProcessed(sig);
+  return { status: processed ? processed.status : "pending", bugData };
 }
 function markApprovalStatus(token, status) {
-  const approvals = loadPendingApprovals();
-  if (approvals[token]) {
-    approvals[token].status      = status;
-    approvals[token].processedAt = new Date().toISOString();
-    savePendingApprovals(approvals);
-  }
+  const sig = token.split(".")[1];
+  markTokenProcessed(sig, status);
 }
 
 // ── Semantic duplicate check — AI compares new bug against existing titles ────
@@ -588,10 +605,7 @@ Reply ONLY with a valid JSON object containing a "results" array:
       }
 
       // ── Step 4: Genuinely new bug — send approval email; tester decides ──────
-      const token     = crypto.randomBytes(20).toString("hex");
       const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3000}`;
-      const approveUrl = `${serverUrl}/approve/${token}`;
-      const declineUrl = `${serverUrl}/decline/${token}`;
 
       const adfDescription = buildADF({
         title:                failure.title,
@@ -605,7 +619,8 @@ Reply ONLY with a valid JSON object containing a "results" array:
         fixes:                ai.fixes
       });
 
-      addPendingApproval(token, {
+      // Encode all bug data into the token itself — survives Render restarts
+      const bugData = {
         title:          failure.title,
         ticketTitle,
         category:       ai.category,
@@ -621,7 +636,11 @@ Reply ONLY with a valid JSON object containing a "results" array:
         labels:         ["bug", "demoshop", ai.category.toLowerCase()],
         dueDays:        catConfig.dueDays,
         storyPoints:    catConfig.storyPoints
-      });
+      };
+      const token      = createApprovalToken(bugData);
+      const approveUrl = `${serverUrl}/approve/${token}`;
+      const declineUrl = `${serverUrl}/decline/${token}`;
+      addPendingApproval(token, bugData); // no-op now, kept for compatibility
 
       await sendApprovalEmail({
         title:      failure.title,
