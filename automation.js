@@ -1,62 +1,75 @@
 require("dotenv").config();
-const Groq                   = require("groq-sdk");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { sendBugEmail, sendApprovalEmail } = require("./email");
+const { sendAlerts }         = require("./alerts");
+const crypto                 = require("crypto");
 
-const groq  = new Groq({ apiKey: process.env.GROQ_API_KEY });
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI2 = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY);
 const geminiModels = [
-  genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),
-  genAI.getGenerativeModel({ model: "gemini-1.5-flash" }),
+  // Key 1
+  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),       name: "Gemini 2.5 Flash [K1]"      },
+  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),  name: "Gemini 2.5 Flash Lite [K1]" },
+  { model: genAI.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K1]"     },
+  { model: genAI.getGenerativeModel({ model: "gemini-2.0-flash" }),       name: "Gemini 2.0 Flash [K1]"      },
+  // Key 2 (separate quota)
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash" }),      name: "Gemini 2.5 Flash [K2]"      },
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash-lite" }), name: "Gemini 2.5 Flash Lite [K2]" },
+  { model: genAI2.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K2]"    },
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.0-flash" }),      name: "Gemini 2.0 Flash [K2]"      },
 ];
 
 const JIRA_AUTH = Buffer.from(
   `${process.env.JIRA_EMAIL}:${process.env.JIRA_API_TOKEN}`
 ).toString("base64");
 
-// ── Jira via PowerShell (uses Windows native HTTP + system proxy) ─────────────
-const fs   = require("fs");
-const os   = require("os");
-const path = require("path");
-const { execSync } = require("child_process");
+const https = require("https");
+const fs    = require("fs");
+const path  = require("path");
 
-async function postJiraPS(fields) {
-  const url = `${process.env.JIRA_BASE_URL}/rest/api/3/issue`;
-  const ts  = Date.now();
-  const tmpBody   = path.join(os.tmpdir(), `jira_body_${ts}.json`);
-  const tmpScript = path.join(os.tmpdir(), `jira_run_${ts}.ps1`);
-  const tmpOut    = path.join(os.tmpdir(), `jira_out_${ts}.txt`);
-
-  fs.writeFileSync(tmpBody, JSON.stringify({ fields }), "utf8");
-
-  const script = `
-$ErrorActionPreference = 'Stop'
-$headers = @{ Authorization='Basic ${JIRA_AUTH}'; Accept='application/json' }
-try {
-  $r = Invoke-RestMethod -Uri '${url}' -Method POST -Headers $headers \`
-       -InFile '${tmpBody.replace(/\\/g, "/")}' -ContentType 'application/json'
-  $r.key | Out-File '${tmpOut.replace(/\\/g, "/")}' -Encoding utf8 -NoNewline
-} catch {
-  $code = [int]$_.Exception.Response.StatusCode
-  $body = ''
-  try { $body = $_.ErrorDetails.Message } catch {}
-  "$code::$body" | Out-File '${tmpOut.replace(/\\/g, "/")}' -Encoding utf8 -NoNewline
-  exit 1
-}`.trim();
-
-  fs.writeFileSync(tmpScript, script, "utf8");
-
-  try {
-    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${tmpScript}"`, {
-      encoding: "utf8", timeout: 30000
+// ── Pure Node.js HTTPS helper — works on Windows, Linux, and Render ───────────
+function jiraRequest({ method = "GET", urlPath, body = null }) {
+  return new Promise((resolve, reject) => {
+    const base   = new URL(process.env.JIRA_BASE_URL);
+    const data   = body ? JSON.stringify(body) : null;
+    const opts   = {
+      hostname: base.hostname,
+      port:     base.port || 443,
+      path:     urlPath,
+      method,
+      headers: {
+        "Authorization": `Basic ${JIRA_AUTH}`,
+        "Accept":        "application/json",
+        "Content-Type":  "application/json",
+        ...(data ? { "Content-Length": Buffer.byteLength(data) } : {})
+      },
+      rejectUnauthorized: false   // handles Zscaler / corporate proxy certs
+    };
+    const req = https.request(opts, res => {
+      let raw = "";
+      res.on("data", c => raw += c);
+      res.on("end", () => {
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try { resolve(JSON.parse(raw)); } catch { resolve(raw); }
+        } else {
+          reject(new Error(`${res.statusCode}::${raw.slice(0, 300)}`));
+        }
+      });
     });
-    const key = fs.readFileSync(tmpOut, "utf8").trim();
-    return key;
-  } catch {
-    const out = fs.existsSync(tmpOut) ? fs.readFileSync(tmpOut, "utf8").trim() : "no output";
-    throw new Error(out);
-  } finally {
-    [tmpBody, tmpScript, tmpOut].forEach(f => { try { fs.unlinkSync(f); } catch (_) {} });
-  }
+    req.on("error", reject);
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+// ── Create Jira issue via HTTPS POST ──────────────────────────────────────────
+async function postJiraHTTPS(fields) {
+  const result = await jiraRequest({
+    method:  "POST",
+    urlPath: "/rest/api/3/issue",
+    body:    { fields }
+  });
+  return result.key;
 }
 
 // ── Category config ───────────────────────────────────────────────────────────
@@ -69,36 +82,27 @@ const CATEGORY_CONFIG = {
 };
 
 // ── Fetch Jira context (assignee + active sprint) once at first ticket ─────────
-let _jiraAccountId  = process.env.JIRA_ACCOUNT_ID || null;
-let _jiraSprintId   = null;
+let _jiraAccountId   = process.env.JIRA_ACCOUNT_ID || null;
+let _jiraSprintId    = null;
 let _jiraContextDone = false;
 
 async function loadJiraContext() {
   if (_jiraContextDone) return;
   _jiraContextDone = true;
-
-  const ts  = Date.now();
-  const ps1 = path.join(os.tmpdir(), `jira_ctx_${ts}.ps1`);
-  const out = path.join(os.tmpdir(), `jira_ctx_out_${ts}.txt`);
-
-  fs.writeFileSync(ps1, `
-$ErrorActionPreference = 'SilentlyContinue'
-$h = @{ Authorization='Basic ${JIRA_AUTH}'; Accept='application/json' }
-$me  = Invoke-RestMethod -Uri '${process.env.JIRA_BASE_URL}/rest/api/3/myself' -Headers $h
-$spr = Invoke-RestMethod -Uri '${process.env.JIRA_BASE_URL}/rest/agile/1.0/board/1/sprint?state=active&maxResults=1' -Headers $h
-$sid = if ($spr.values.Count -gt 0) { $spr.values[0].id } else { '' }
-"$($me.accountId)|$sid" | Out-File '${out.replace(/\\/g,"/")}' -Encoding utf8 -NoNewline
-`.trim(), "utf8");
-
   try {
-    execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${ps1}"`, { timeout: 10000 });
-    const [acct, sprint] = fs.readFileSync(out, "utf8").trim().split("|");
-    if (acct)   _jiraAccountId = acct.trim();
-    if (sprint) _jiraSprintId  = parseInt(sprint.trim());
-    if (_jiraAccountId) console.log(`   👤 Jira assignee: ${_jiraAccountId}`);
-    if (_jiraSprintId)  console.log(`   🏃 Active sprint: ${_jiraSprintId}`);
+    const me = await jiraRequest({ urlPath: "/rest/api/3/myself" });
+    if (me.accountId) {
+      _jiraAccountId = me.accountId;
+      console.log(`   👤 Jira assignee: ${_jiraAccountId}`);
+    }
   } catch (_) {}
-  finally { [ps1, out].forEach(f => { try { fs.unlinkSync(f); } catch (_) {} }); }
+  try {
+    const spr = await jiraRequest({ urlPath: "/rest/agile/1.0/board/1/sprint?state=active&maxResults=1" });
+    if (spr.values && spr.values.length > 0) {
+      _jiraSprintId = spr.values[0].id;
+      console.log(`   🏃 Active sprint : ${_jiraSprintId}`);
+    }
+  } catch (_) {}
 }
 
 // ── Rich ADF description builder ──────────────────────────────────────────────
@@ -154,6 +158,182 @@ function buildADF({ title, testCase, area, category, expected, actual, classific
   };
 }
 
+// ── Local deduplication cache (jira-dedup-cache.json) ─────────────────────────
+const DEDUP_CACHE_FILE = path.join(__dirname, "jira-dedup-cache.json");
+
+function loadDedupCache() {
+  try { return JSON.parse(fs.readFileSync(DEDUP_CACHE_FILE, "utf8")); } catch (_) { return {}; }
+}
+function saveDedupCache(cache) {
+  try { fs.writeFileSync(DEDUP_CACHE_FILE, JSON.stringify(cache, null, 2), "utf8"); } catch (_) {}
+}
+function normalizeTitleForDedup(title) {
+  return title
+    .replace(/^\[[\w\s]+\]\s*/i, "")             // remove [FRONTEND] etc.
+    .replace(/^[\w]+-[\d-]+\s*[—\-]\s*/i, "")   // remove US-01-01 — or MT-01 —
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+function normalizeErrorForDedup(errorValue) {
+  if (!errorValue) return null;
+  return "err::" + errorValue
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 100);
+}
+// Check by BOTH test name AND actual error value — catches same bug even if AI
+// generated a different test name on a different run
+function checkDedupCache(title, errorValue) {
+  const cache    = loadDedupCache();
+  const titleKey = normalizeTitleForDedup(title);
+  const errorKey = normalizeErrorForDedup(errorValue);
+  return cache[titleKey] || (errorKey ? cache[errorKey] : null) || null;
+}
+// Increment the repeat counter for both keys and return the new count
+function incrementDedupCount(title, errorValue) {
+  const cache    = loadDedupCache();
+  const titleKey = normalizeTitleForDedup(title);
+  const errorKey = normalizeErrorForDedup(errorValue);
+  let entry = cache[titleKey] || (errorKey ? cache[errorKey] : null);
+  if (!entry) return 1;
+  entry.count = (entry.count || 0) + 1;
+  if (cache[titleKey]) cache[titleKey] = entry;
+  if (errorKey && cache[errorKey]) cache[errorKey] = entry;
+  saveDedupCache(cache);
+  return entry.count;
+}
+// Save under BOTH keys so future runs are caught whichever way they arrive
+// originalTitle and bugDescription are stored for semantic dedup comparison
+function saveToDedupCache(title, errorValue, jiraKey, jiraUrl, originalTitle, bugDescription) {
+  const cache = loadDedupCache();
+  const entry  = {
+    jiraKey, jiraUrl,
+    createdAt: new Date().toISOString(),
+    count: 1,
+    originalTitle:  originalTitle  || title,
+    bugDescription: bugDescription || ""
+  };
+  cache[normalizeTitleForDedup(title)] = entry;
+  const errorKey = normalizeErrorForDedup(errorValue);
+  if (errorKey) cache[errorKey] = entry;
+  saveDedupCache(cache);
+}
+
+// ── Pending approvals (tester must approve before Jira ticket is created) ────
+const PENDING_APPROVALS_FILE = path.join(__dirname, "pending-approvals.json");
+
+function loadPendingApprovals() {
+  try { return JSON.parse(fs.readFileSync(PENDING_APPROVALS_FILE, "utf8")); } catch (_) { return {}; }
+}
+function savePendingApprovals(data) {
+  try { fs.writeFileSync(PENDING_APPROVALS_FILE, JSON.stringify(data, null, 2), "utf8"); } catch (_) {}
+}
+function addPendingApproval(token, bugData) {
+  const approvals = loadPendingApprovals();
+  approvals[token] = {
+    status:    "pending",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(), // 7-day expiry
+    bugData
+  };
+  savePendingApprovals(approvals);
+}
+function getPendingApproval(token) {
+  return loadPendingApprovals()[token] || null;
+}
+function markApprovalStatus(token, status) {
+  const approvals = loadPendingApprovals();
+  if (approvals[token]) {
+    approvals[token].status      = status;
+    approvals[token].processedAt = new Date().toISOString();
+    savePendingApprovals(approvals);
+  }
+}
+
+// ── Semantic duplicate check — AI compares new bug against existing titles ────
+// Returns the Jira key of the matching existing bug, or null if genuinely new.
+async function semanticDedupCheck(newTitle, newDescription) {
+  const cache = loadDedupCache();
+  const existingBugs = Object.entries(cache)
+    .filter(([key, val]) => val.jiraKey && !key.startsWith("err::") && val.originalTitle)
+    .slice(0, 30)
+    .map(([, val]) => `• [${val.jiraKey}] ${val.originalTitle}${val.bugDescription ? " — " + val.bugDescription : ""}`);
+
+  if (existingBugs.length === 0) return null;
+
+  const prompt = `You are a QA deduplication expert. Decide if the NEW BUG below describes the same issue as any EXISTING BUG, even if the wording is different.
+
+NEW BUG: ${newTitle}
+Description: ${newDescription || ""}
+
+EXISTING BUGS:
+${existingBugs.join("\n")}
+
+Rules:
+- Mark as duplicate only when the root cause AND the failing behaviour are the same.
+- Different symptoms in the same feature area are NOT duplicates.
+- Respond with JSON only (no markdown).
+
+If duplicate: {"duplicate": true, "matchingKey": "SCRUM-XXX", "reason": "one sentence"}
+If new:       {"duplicate": false}`;
+
+  try {
+    const rawText = (await generateWithRetry(prompt)).trim()
+      .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+    const result = JSON.parse(rawText);
+    if (result.duplicate && result.matchingKey) {
+      console.log(`   🧠 Semantic dedup: matches ${result.matchingKey} — ${result.reason}`);
+      return result.matchingKey;
+    }
+  } catch (err) {
+    console.log(`   ⚠️  Semantic dedup skipped: ${err.message.slice(0, 80)}`);
+  }
+  return null;
+}
+
+// ── Jira search fallback — catches tickets NOT yet in local cache ──────────────
+async function searchJiraForDuplicate(title) {
+  const keywords = title
+    .replace(/^\[[\w\s]+\]\s*/i, "")
+    .replace(/^[\w]+-[\d-]+\s*[—\-]\s*/i, "")
+    .replace(/[^a-z0-9 ]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(w => w.length > 3)
+    .slice(0, 5)
+    .join(" ");
+  // If keyword extraction produced nothing (very short or noisy titles),
+  // try a phrase search using the full title as a fallback. That improves
+  // matching for short summaries and reduces accidental duplicate creation.
+  if (!keywords) {
+    try {
+      const phrase = title.replace(/"/g, '\\"');
+      const jqlPhrase = `project = "${process.env.JIRA_PROJECT_KEY}" AND summary ~ "${phrase}" ORDER BY created DESC`;
+      const encPhrase = encodeURIComponent(jqlPhrase);
+      const resPhrase = await jiraRequest({ urlPath: `/rest/api/3/search?jql=${encPhrase}&maxResults=1&fields=key` });
+      if (resPhrase.issues && resPhrase.issues.length > 0) return resPhrase.issues[0].key;
+    } catch (_) {}
+    return null;
+  }
+
+  const jql = `project = "${process.env.JIRA_PROJECT_KEY}" AND summary ~ "${keywords.replace(/"/g, '\\"')}" ORDER BY created DESC`;
+  const enc = encodeURIComponent(jql);
+
+  try {
+    const result = await jiraRequest({ urlPath: `/rest/api/3/search?jql=${enc}&maxResults=1&fields=key` });
+    if (result.issues && result.issues.length > 0) return result.issues[0].key;
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ── Jira ticket creator ───────────────────────────────────────────────────────
 async function createJiraTicket({ title, adfDescription, priority, labels, category, dueDays, storyPoints }) {
   await loadJiraContext();
@@ -185,7 +365,7 @@ async function createJiraTicket({ title, adfDescription, priority, labels, categ
   let lastErr = "";
   for (const fields of attempts) {
     try {
-      const key = await postJiraPS(fields);
+      const key = await postJiraHTTPS(fields);
       const ticketUrl = `${process.env.JIRA_BASE_URL}/browse/${key}`;
       console.log(`   🎫 Jira ticket created: ${key} → ${ticketUrl}`);
       return ticketUrl;
@@ -209,71 +389,96 @@ function getAgingInfo(firstSeen, level) {
   return { daysOld, isUrgent };
 }
 
-// ── AI call: Groq primary → Gemini fallback ───────────────────────────────────
-async function generateWithRetry(prompt, maxRetries = 4) {
-  // Try Groq first (higher quota, faster)
-  try {
-    const response = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    });
-    console.log("   🟢 Provider: Groq (Llama 3.3 70B)");
-    return response.choices[0].message.content;
-  } catch (groqErr) {
-    const blocked = groqErr.status === 403 || groqErr.message?.includes("403") || groqErr.message?.includes("blocked");
-    const groqMsg = blocked ? "blocked by network" : groqErr.message;
-    console.log(`   ⚠️  Groq unavailable (${groqMsg}) — falling back to Gemini…`);
-  }
+// ── Rule-based classifier (last resort when ALL AI models fail) ───────────────
+function ruleBasedClassify(failures) {
+  const results = failures.map(f => {
+    const text = `${f.title} ${f.errorValue} ${f.culprit}`.toLowerCase();
 
-  // Fallback: try gemini-2.5-flash first, then gemini-1.5-flash if quota exceeded
-  const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
+    let category = "Frontend";
+    let reason   = "Default classification — AI models temporarily unavailable";
+
+    if (/password|card|credit|auth|token|secret|leak|xss|inject/.test(text)) {
+      category = "Security";
+      reason   = "Contains security-sensitive keywords (password/card/auth)";
+    } else if (/calculat|total|sum|price|shipping|tax|backend|server|logic|validat/.test(text)) {
+      category = "Backend";
+      reason   = "Relates to calculation or server-side validation logic";
+    } else if (/sort|nan|rating|performance|slow|algorithm|comparison/.test(text)) {
+      category = "Performance";
+      reason   = "Relates to sorting, calculation accuracy, or algorithm behaviour";
+    } else if (/display|label|badge|count|ui|layout|render|case|format/.test(text)) {
+      category = "Frontend";
+      reason   = "Relates to UI display, labels, or front-end rendering";
+    }
+
+    return {
+      id:                   f.id,
+      category,
+      classificationReason: reason,
+      brokenCode:           `Issue in ${f.culprit}: ${f.errorValue}`,
+      fixes:                ["Review and fix the identified issue", "Add automated test coverage", "Verify fix in staging"],
+      emailBody:            `Bug detected: ${f.title}. Actual: ${f.errorValue}`
+    };
+  });
+
+  return JSON.stringify({ results });
+}
+
+// ── AI call: Gemini (tries each model in order) ───────────────────────────────
+async function generateWithRetry(prompt, maxRetries = 4) {
   for (let m = 0; m < geminiModels.length; m++) {
-    const model = geminiModels[m];
-    const modelName = modelNames[m];
+    const { model, name: modelName } = geminiModels[m];
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const result = await model.generateContent(prompt);
-        console.log(`   🔵 Provider: ${modelName} (fallback)`);
+        console.log(`   🔵 Provider: ${modelName}`);
         return result.response.text().trim()
           .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
       } catch (err) {
         const isQuota   = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
         const is429     = err.message?.includes("429");
         const is503     = err.message?.includes("503");
+        const is404     = err.message?.includes("404");
         const isRetryable = (is429 || is503) && !isQuota;
 
-        if (isQuota) {
-          console.log(`   ⚠️  ${modelName} quota exhausted — switching to next model…`);
+        if (isQuota || is404) {
+          // Quota exhausted or model not found — try next model immediately
+          const reason = is404 ? "not available" : "quota exhausted";
+          console.log(`   ⚠️  ${modelName} ${reason} — switching to next model…`);
+          break;
+        }
+
+        if (is503 && attempt < maxRetries) {
+          // Overloaded — wait briefly then try next model (don't keep retrying same model)
+          console.log(`   ⏳ ${modelName} overloaded — switching to next model…`);
           break;
         }
 
         if (!isRetryable || attempt === maxRetries) {
-          console.log(`   ❌ ${modelName} failed (attempt ${attempt}): ${err.message}`);
+          console.log(`   ❌ ${modelName} failed (attempt ${attempt}): ${err.message.slice(0, 120)}`);
           if (m === geminiModels.length - 1) throw err;
           break;
         }
 
         const match  = err.message.match(/retry in (\d+(?:\.\d+)?)s/i);
-        const waitMs = is503 ? 15000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 30000);
-        console.log(`   ⏳ ${modelName} ${is503 ? "overloaded" : "rate limited"} — waiting ${Math.ceil(waitMs / 1000)}s then retrying (${attempt}/${maxRetries})…`);
+        const waitMs = match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 20000;
+        console.log(`   ⏳ ${modelName} rate limited — waiting ${Math.ceil(waitMs / 1000)}s then retrying (${attempt}/${maxRetries})…`);
         await new Promise(r => setTimeout(r, waitMs));
       }
     }
   }
 
-  throw new Error("All Gemini models exhausted");
+  throw new Error("All Gemini models unavailable — quota exhausted or service down");
 }
 
-// ── BATCH pipeline — ONE Groq call for ALL failures ──────────────────────────
+// ── BATCH pipeline — classifies ALL failures with Gemini in one call ─────────
 // failures: [{ id, title, errorType, errorValue, culprit, expected, area, testCase }]
 // onResult(result) is called immediately after each ticket is created/skipped
 async function runBatchAutomation(failures, onResult = null) {
   if (failures.length === 0) return [];
 
-  console.log(`\n🤖 Sending ${failures.length} failure(s) to Groq AI for batch classification…\n`);
+  console.log(`\n🤖 Sending ${failures.length} failure(s) to Gemini for batch classification…\n`);
 
   const prompt = `
 You are a senior QA engineer. Classify ALL of these failing test cases from a DemoShop e-commerce app in ONE response.
@@ -308,8 +513,14 @@ Reply ONLY with a valid JSON object containing a "results" array:
   ]
 }`;
 
-  const rawText = (await generateWithRetry(prompt)).trim()
-    .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+  let rawText;
+  try {
+    rawText = (await generateWithRetry(prompt)).trim()
+      .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+  } catch (aiErr) {
+    console.log(`\n   ⚠️  All AI models unavailable — using rule-based classifier as fallback`);
+    rawText = ruleBasedClassify(failures);
+  }
   const parsed = JSON.parse(rawText);
   const classifications = parsed.results ?? parsed;
 
@@ -333,30 +544,105 @@ Reply ONLY with a valid JSON object containing a "results" array:
     }
 
     try {
-      const jiraUrl = await createJiraTicket({
-        title:          `[${ai.category.toUpperCase()}] ${failure.title}`,
-        adfDescription: buildADF({
-          title:                failure.title,
-          testCase:             failure.testCase || failure.id,
-          area:                 failure.area || ai.category,
-          category:             ai.category,
-          expected:             failure.expected,
-          actual:               failure.errorValue,
-          classificationReason: ai.classificationReason,
-          brokenCode:           ai.brokenCode,
-          fixes:                ai.fixes
-        }),
-        priority:        catConfig.priority,
-        labels:          ["bug", "demoshop", ai.category.toLowerCase()],
-        category:        ai.category,
-        dueDays:         catConfig.dueDays,
-        storyPoints:     catConfig.storyPoints
+      const ticketTitle = `[${ai.category.toUpperCase()}] ${failure.title}`;
+
+      // ── Step 1: Check local cache (instant — catches tickets from previous runs) ─
+      const cached = checkDedupCache(ticketTitle, failure.errorValue);
+      if (cached) {
+        const repeatCount = incrementDedupCount(ticketTitle, failure.errorValue);
+        console.log(`   🔁 ${ai.id} → Repeated ×${repeatCount} — already logged as ${cached.jiraKey} (skipping)`);
+        const item = { id: ai.id, logged: false, duplicate: true, duplicateKey: cached.jiraKey,
+                       repeatCount, category: ai.category, reason: ai.classificationReason, jiraUrl: cached.jiraUrl };
+        output.push(item);
+        if (onResult) await onResult(item);
+        continue;
+      }
+
+      // ── Step 2: Search Jira (catches old tickets not yet in local cache) ──────
+      const existingKey = await searchJiraForDuplicate(ticketTitle);
+      if (existingKey) {
+        const existingUrl = `${process.env.JIRA_BASE_URL}/browse/${existingKey}`;
+        saveToDedupCache(ticketTitle, failure.errorValue, existingKey, existingUrl, ticketTitle);
+        const repeatCount = incrementDedupCount(ticketTitle, failure.errorValue);
+        console.log(`   🔁 ${ai.id} → Repeated ×${repeatCount} — already logged as ${existingKey} (skipping)`);
+        const item = { id: ai.id, logged: false, duplicate: true, duplicateKey: existingKey,
+                       repeatCount, category: ai.category, reason: ai.classificationReason, jiraUrl: existingUrl };
+        output.push(item);
+        if (onResult) await onResult(item);
+        continue;
+      }
+
+      // ── Step 3: Semantic AI dedup — catches same bug with different wording ──
+      const semDescription = `${failure.expected} vs ${failure.errorValue}`;
+      const semanticMatch  = await semanticDedupCheck(ticketTitle, semDescription);
+      if (semanticMatch) {
+        const existingUrl = `${process.env.JIRA_BASE_URL}/browse/${semanticMatch}`;
+        saveToDedupCache(ticketTitle, failure.errorValue, semanticMatch, existingUrl, ticketTitle, semDescription);
+        const repeatCount = incrementDedupCount(ticketTitle, failure.errorValue);
+        console.log(`   🔁 ${ai.id} → Semantic duplicate ×${repeatCount} of ${semanticMatch} (skipping)`);
+        const item = { id: ai.id, logged: false, duplicate: true, duplicateKey: semanticMatch,
+                       repeatCount, category: ai.category, reason: ai.classificationReason, jiraUrl: existingUrl };
+        output.push(item);
+        if (onResult) await onResult(item);
+        continue;
+      }
+
+      // ── Step 4: Genuinely new bug — send approval email; tester decides ──────
+      const token     = crypto.randomBytes(20).toString("hex");
+      const serverUrl = process.env.SERVER_URL || `http://localhost:${process.env.PORT || 3000}`;
+      const approveUrl = `${serverUrl}/approve/${token}`;
+      const declineUrl = `${serverUrl}/decline/${token}`;
+
+      const adfDescription = buildADF({
+        title:                failure.title,
+        testCase:             failure.testCase || failure.id,
+        area:                 failure.area || ai.category,
+        category:             ai.category,
+        expected:             failure.expected,
+        actual:               failure.errorValue,
+        classificationReason: ai.classificationReason,
+        brokenCode:           ai.brokenCode,
+        fixes:                ai.fixes
       });
-      const item = { id: ai.id, logged: true, category: ai.category, reason: ai.classificationReason, jiraUrl, fixes: ai.fixes };
+
+      addPendingApproval(token, {
+        title:          failure.title,
+        ticketTitle,
+        category:       ai.category,
+        expected:       failure.expected,
+        actual:         failure.errorValue,
+        reason:         ai.classificationReason,
+        fixes:          ai.fixes,
+        testCase:       failure.testCase || failure.id,
+        errorValue:     failure.errorValue,
+        bugDescription: ai.classificationReason,
+        adfDescription,
+        priority:       catConfig.priority,
+        labels:         ["bug", "demoshop", ai.category.toLowerCase()],
+        dueDays:        catConfig.dueDays,
+        storyPoints:    catConfig.storyPoints
+      });
+
+      await sendApprovalEmail({
+        title:      failure.title,
+        category:   ai.category,
+        expected:   failure.expected,
+        actual:     failure.errorValue,
+        reason:     ai.classificationReason,
+        fixes:      ai.fixes,
+        testCase:   failure.testCase || failure.id,
+        approveUrl,
+        declineUrl
+      });
+
+      console.log(`   📬 ${ai.id} → Approval email sent (token: ${token.slice(0, 8)}…)`);
+      const item = { id: ai.id, logged: false, pendingApproval: true,
+                     category: ai.category, reason: ai.classificationReason, jiraUrl: null };
       output.push(item);
       if (onResult) await onResult(item);
+
     } catch (err) {
-      console.log(`   ⚠️  Jira error for ${ai.id}: ${err.message}`);
+      console.log(`   ⚠️  Jira error for ${ai.id}: ${err.message.slice(0, 200)}`);
       const item = { id: ai.id, logged: false, category: ai.category, reason: ai.classificationReason, jiraUrl: null };
       output.push(item);
       if (onResult) await onResult(item);
@@ -451,4 +737,49 @@ Reply ONLY with valid JSON (no markdown, no code fences):
   }
 }
 
-module.exports = { runAutomation, runBatchAutomation };
+// ── Approve: create Jira ticket from a pending approval ───────────────────────
+async function processApproval(token) {
+  const approval = getPendingApproval(token);
+  if (!approval) throw new Error("Approval token not found");
+  if (approval.status !== "pending") throw new Error(`Already ${approval.status}`);
+
+  const { bugData } = approval;
+
+  const jiraUrl = await createJiraTicket({
+    title:          bugData.ticketTitle,
+    adfDescription: bugData.adfDescription,
+    priority:       bugData.priority,
+    labels:         bugData.labels,
+    category:       bugData.category,
+    dueDays:        bugData.dueDays,
+    storyPoints:    bugData.storyPoints
+  });
+
+  const jiraKey = jiraUrl.split("/browse/")[1] || jiraUrl;
+  saveToDedupCache(bugData.ticketTitle, bugData.errorValue, jiraKey, jiraUrl, bugData.ticketTitle, bugData.bugDescription);
+  markApprovalStatus(token, "approved");
+
+  await sendAlerts({
+    title:    bugData.title,
+    category: bugData.category,
+    expected: bugData.expected,
+    actual:   bugData.actual,
+    reason:   bugData.reason,
+    fixes:    bugData.fixes,
+    jiraUrl,
+    testCase: bugData.testCase
+  });
+
+  return { jiraUrl, jiraKey, category: bugData.category, title: bugData.title };
+}
+
+// ── Decline: dismiss the pending approval without creating any Jira ticket ────
+function declineApproval(token) {
+  const approval = getPendingApproval(token);
+  if (!approval) throw new Error("Approval token not found");
+  if (approval.status !== "pending") throw new Error(`Already ${approval.status}`);
+  markApprovalStatus(token, "declined");
+  return { category: approval.bugData.category, title: approval.bugData.title };
+}
+
+module.exports = { runAutomation, runBatchAutomation, processApproval, declineApproval };

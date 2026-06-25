@@ -1,17 +1,24 @@
 require("dotenv").config();
 const fs                     = require("fs");
 const path                   = require("path");
-const Groq                   = require("groq-sdk");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { runBatchAutomation } = require("./automation");
-const { getHtml, stripHtml, runCheck: execCheck } = require("./utils");
+const { getPageAndHtml, stripHtml, executeCheck } = require("./utils");
 const { saveTestCases, saveRunResult } = require("./storage");
 
-const groq         = new Groq({ apiKey: process.env.GROQ_API_KEY });
 const genAI        = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI2       = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY);
 const geminiModels = [
-  genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),
-  genAI.getGenerativeModel({ model: "gemini-1.5-flash" }),
+  // Key 1
+  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),        name: "Gemini 2.5 Flash [K1]"      },
+  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),   name: "Gemini 2.5 Flash Lite [K1]" },
+  { model: genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" }),name: "Gemini Flash Lite [K1]"     },
+  { model: genAI.getGenerativeModel({ model: "gemini-2.0-flash" }),        name: "Gemini 2.0 Flash [K1]"      },
+  // Key 2 (separate quota)
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash" }),       name: "Gemini 2.5 Flash [K2]"      },
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),  name: "Gemini 2.5 Flash Lite [K2]" },
+  { model: genAI2.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K2]"     },
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.0-flash" }),       name: "Gemini 2.0 Flash [K2]"      },
 ];
 
 const RUN_ID = `ai-run-${Date.now()}`;
@@ -41,93 +48,96 @@ async function generateTestCases(html) {
   const stripped = stripHtml(html, 80000);  // from utils.js
 
   const prompt = `
-You are a senior QA engineer analyzing an e-commerce HTML page for bugs.
+You are a senior QA engineer analyzing an e-commerce webpage for bugs.
+You will receive the rendered HTML source. Generate EXACTLY ${TEST_COUNT || "8–12"} realistic test cases.
 
-Analyze the HTML and generate test cases that check for issues detectable from the HTML source only.
 Focus on:
-- Input field types (password fields → type="password", phone → type="tel", email → type="email")
-- Presence of validation attributes (pattern, required, maxlength, min, max)
-- Form security (no credentials in plaintext inputs)
-- Correct element attributes for accessibility and validation
+- Navigation links and menus are visible (logo, categories, cart, profile, search)
+- Input fields use correct types: password → type="password", email → type="email", phone → type="tel"
+- Presence of validation attributes: required, pattern, maxlength
+- Form security: login forms must NOT have the "novalidate" attribute
+- Call-to-action buttons are visible and correctly labelled
+- Page title is meaningful and contains the brand name
 
-Use EXACTLY one of these check types per test case:
+PREFERRED: Use Playwright check types — they run against the LIVE rendered page:
+1. visible         → element is visible in the browser
+   { "check": "visible", "selector": "CSS_selector" }
+2. not_visible     → element is hidden or absent
+   { "check": "not_visible", "selector": "CSS_selector" }
+3. text_contains   → element's rendered text includes a string
+   { "check": "text_contains", "selector": "CSS_selector", "value": "expected text" }
+4. count_gte       → at least N matching elements exist
+   { "check": "count_gte", "selector": "CSS_selector", "expectedCount": 1 }
+5. attr_equals     → element attribute equals exact value
+   { "check": "attr_equals", "selector": "CSS_selector", "attribute": "type", "expectedValue": "password" }
+6. attr_contains   → element attribute contains a substring
+   { "check": "attr_contains", "selector": "CSS_selector", "attribute": "href", "value": "/cart" }
+7. title_contains  → browser tab title contains a substring
+   { "check": "title_contains", "value": "substring" }
 
-1. attribute_value — check a specific input's attribute
-   Required extra fields: "elementId", "attribute", "expectedValue"
-   Only use this if the element has a clear, unique id attribute in the HTML.
+FALLBACK (only when no CSS selector can be derived — e.g. security string checks):
+8. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
+9. html_not_contains→ { "check": "html_not_contains", "value": "string that must NOT appear" }
 
-2. html_contains — the HTML source must contain this exact string
-   Required extra fields: "value"
+CSS selector writing rules (critical for SPAs with obfuscated classes):
+- Text matching:   button:has-text('Sign In'), a:has-text('Login')
+- Aria attributes: [aria-label*='search'], [role='navigation'], [aria-haspopup]
+- Partial classes: [class*='logo'], [class*='nav'], [class*='cart'], [class*='search']
+- Input attrs:     input[type='password'], input[placeholder*='search'], input[name='email']
+- Links:           a[href*='/login'], a[href*='/cart'], a[href='/']
+- Structural:      header, nav, footer, form, main
+- AVOID exact obfuscated class names like ".sc-abc123"
 
-3. html_not_contains — the HTML source must NOT contain this exact string
-   Required extra fields: "value"
-
-Return a JSON object with a "testCases" array of EXACTLY ${TEST_COUNT || "8–12"} test cases in this exact format:
+Return ONLY valid JSON — no extra text, no markdown:
 {
   "testCases": [
     {
       "id": "AI-01",
       "area": "Security|Backend|Frontend|Performance",
-      "name": "Short test name",
+      "name": "Short test name (max 60 chars)",
       "expected": "What correct behaviour looks like",
-      "check": "attribute_value",
-      "elementId": "element-id-without-hash",
-      "attribute": "type",
-      "expectedValue": "password"
+      "check": "visible",
+      "selector": "input[type='password'], input[placeholder*='password']"
     }
   ]
 }
 
-HTML:
+HTML SOURCE:
 ${stripped}`;
 
   console.log(`\n🤖 Sending ${SOURCE_LABEL} to AI for test case generation…\n`);
 
   let rawText;
-  try {
-    const response = await groq.chat.completions.create({
-      messages: [{ role: "user", content: prompt }],
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.1,
-      response_format: { type: "json_object" }
-    });
-    console.log("   🟢 Provider: Groq (Llama 3.3 70B)");
-    rawText = response.choices[0].message.content;
-  } catch (groqErr) {
-    const blocked = groqErr.status === 403 || groqErr.message?.includes("403") || groqErr.message?.includes("blocked");
-    console.log(`   ⚠️  Groq unavailable (${blocked ? "blocked by network" : groqErr.message}) — falling back to Gemini…`);
-
-    const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
-    for (let m = 0; m < geminiModels.length; m++) {
-      const model = geminiModels[m];
-      const modelName = modelNames[m];
-      let succeeded = false;
-
-      for (let attempt = 1; attempt <= 4; attempt++) {
-        try {
-          const result = await model.generateContent(prompt);
-          console.log(`   🔵 Provider: ${modelName} (fallback)`);
-          rawText = result.response.text();
-          succeeded = true;
+  for (const { model, name: modelName } of geminiModels) {
+    let succeeded = false;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        const result = await model.generateContent(prompt);
+        console.log(`   🔵 Provider: ${modelName}`);
+        rawText = result.response.text();
+        succeeded = true;
+        break;
+      } catch (gemErr) {
+        const isQuota = gemErr.message?.includes("quota") || gemErr.message?.includes("RESOURCE_EXHAUSTED");
+        const is404   = gemErr.message?.includes("404");
+        if (isQuota || is404) {
+          console.log(`   ⚠️  ${modelName} ${is404 ? "not available" : "quota exhausted"} — switching to next model…`);
           break;
-        } catch (gemErr) {
-          const isQuota = gemErr.message?.includes("quota") || gemErr.message?.includes("RESOURCE_EXHAUSTED");
-          if (isQuota) {
-            console.log(`   ⚠️  ${modelName} quota exhausted — switching to next model…`);
-            break;
-          }
-          const retryable = gemErr.message?.includes("503") || gemErr.message?.includes("429");
-          if (!retryable || attempt === 4) throw gemErr;
-          const match  = gemErr.message.match(/retry in (\d+(?:\.\d+)?)s/i);
-          const wait   = gemErr.message?.includes("503") ? 15000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 30000);
-          console.log(`   ⏳ ${modelName} busy — waiting ${Math.ceil(wait / 1000)}s then retrying (${attempt}/4)…`);
-          await new Promise(r => setTimeout(r, wait));
         }
+        const retryable = gemErr.message?.includes("503") || gemErr.message?.includes("429");
+        if (!retryable || attempt === 4) { console.log(`   ⚠️  ${modelName} failed — switching…`); break; }
+        const match = gemErr.message.match(/retry in (\d+(?:\.\d+)?)s/i);
+        const wait  = gemErr.message?.includes("503") ? 10000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 20000);
+        console.log(`   ⏳ ${modelName} busy — waiting ${Math.ceil(wait / 1000)}s then retrying (${attempt}/4)…`);
+        await new Promise(r => setTimeout(r, wait));
       }
-      if (succeeded) break;
     }
+    if (succeeded) break;
   }
 
+  if (!rawText) {
+    throw new Error("All AI models are currently unavailable (quota exhausted or service down). Please try again later.");
+  }
   rawText = rawText.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
   const parsed    = JSON.parse(rawText);
   const testCases = parsed.testCases ?? parsed;
@@ -144,14 +154,15 @@ ${stripped}`;
 }
 
 // ── Step 2 + 3: Run generated tests → batch AI classify → Jira ───────────────
-async function runGeneratedTests(testCases, html) {
+async function runGeneratedTests(testCases, html, page = null) {
   const domain   = TARGET_URL ? new URL(TARGET_URL).hostname : "DemoShop";
   const failures = [];
   let passed = 0;
 
+  const mode = page ? "Playwright (live)" : "HTML source";
   console.log("═".repeat(54));
   console.log(`   ${domain} — AI Generated Test Runner`);
-  console.log(`   Sprint : ${SPRINT_NAME}`);
+  console.log(`   Sprint : ${SPRINT_NAME}   Mode: ${mode}`);
   console.log("═".repeat(54) + "\n");
 
   // Phase 1: run all checks
@@ -160,7 +171,7 @@ async function runGeneratedTests(testCases, html) {
     await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "running" });
 
     try {
-      const result = execCheck(html, tc);   // from utils.js
+      const result = await executeCheck(page, html, tc);  // Playwright or HTML fallback
       if (result.passed) {
         console.log("✅ PASS");
         passed++;
@@ -185,7 +196,8 @@ async function runGeneratedTests(testCases, html) {
   saveRunResult(domain, SPRINT_NAME, RUN_ID, [], summary);
 
   // Phase 2: batch AI classify failures → Jira
-  let jiraCount = 0;
+  let jiraCount      = 0;
+  let duplicateCount = 0;
   if (failures.length > 0) {
     for (const f of failures) await postResult({ id: f.id, name: f.title, status: "classifying" });
     try {
@@ -194,10 +206,13 @@ async function runGeneratedTests(testCases, html) {
         await postResult({
           id: r.id, name: failure?.title || r.id, area: failure?.area,
           status: "fail", actual: failure?.errorValue,
-          category: r.category, reason: r.reason, jiraUrl: r.jiraUrl
+          category: r.category, reason: r.reason, jiraUrl: r.jiraUrl,
+          duplicate: r.duplicate, repeatCount: r.repeatCount,
+          pendingApproval: r.pendingApproval || false
         });
       });
-      jiraCount = batchResults.filter(r => r.logged).length;
+      jiraCount      = batchResults.filter(r => r.logged).length;
+      duplicateCount = batchResults.filter(r => r.duplicate).length;
     } catch (err) {
       console.log(`\n💥 Batch AI Error — ${err.message}\n`);
     }
@@ -209,15 +224,22 @@ async function runGeneratedTests(testCases, html) {
   console.log(`   ✅ Passed       : ${passed}`);
   console.log(`   ❌ Failed       : ${testCases.length - passed}`);
   console.log(`   🎫 Jira tickets : ${jiraCount} created`);
+  if (duplicateCount > 0)
+    console.log(`   🔁 Repeated     : ${duplicateCount} bug(s) already in Jira (skipped)`);
   console.log(`   💾 Saved to     : test-suites/${domain}/${SPRINT_NAME}/`);
   console.log("═".repeat(54) + "\n");
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
-  const html      = await getHtml(TARGET_URL);
-  const testCases = await generateTestCases(html);
-  await runGeneratedTests(testCases, html);
+  // Open browser once — page stays alive while AI generates tests, then runs them
+  const { html, page, browser } = await getPageAndHtml(TARGET_URL);
+  try {
+    const testCases = await generateTestCases(html);
+    await runGeneratedTests(testCases, html, page);
+  } finally {
+    if (browser) await browser.close();
+  }
 }
 
 main().catch(err => {

@@ -4,3 +4,11 @@ ai-testcases.json
 cloudflared.exe
 test-results/
 *.log
+
+jira-dedup-cache.json
+pending-approvals.json
+test-suites/
+
+jira-dedup-cache.json
+pending-approvals.json
+test-suites/

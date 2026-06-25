@@ -1,14 +1,23 @@
 require("dotenv").config();
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI2 = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY);
 const geminiModels = [
-  genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),
-  genAI.getGenerativeModel({ model: "gemini-1.5-flash" }),
+  // Key 1
+  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),        name: "Gemini 2.5 Flash [K1]"      },
+  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),   name: "Gemini 2.5 Flash Lite [K1]" },
+  { model: genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" }),name: "Gemini Flash Lite [K1]"     },
+  { model: genAI.getGenerativeModel({ model: "gemini-2.0-flash" }),        name: "Gemini 2.0 Flash [K1]"      },
+  // Key 2 (separate quota)
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash" }),       name: "Gemini 2.5 Flash [K2]"      },
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),  name: "Gemini 2.5 Flash Lite [K2]" },
+  { model: genAI2.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K2]"     },
+  { model: genAI2.getGenerativeModel({ model: "gemini-2.0-flash" }),       name: "Gemini 2.0 Flash [K2]"      },
 ];
 
 const { runBatchAutomation } = require("./automation");
-const { getHtml, stripHtml, runCheck } = require("./utils");
+const { getPageAndHtml, stripHtml, executeCheck } = require("./utils");
 const { saveTestCases, saveRunResult }  = require("./storage");
 
 const RUN_ID = `manual-run-${Date.now()}`;
@@ -18,8 +27,18 @@ const RUN_ID = `manual-run-${Date.now()}`;
 const arg       = (flag) => { const i = process.argv.indexOf(flag); return i !== -1 ? process.argv[i + 1] : null; };
 const TARGET_URL  = arg("--url");
 const TESTS_RAW   = arg("--tests");
+const TESTS_FILE  = arg("--tests-file");
 const SPRINT_NAME = arg("--sprint") || `run-${new Date().toISOString().split("T")[0]}`;
-const USER_TESTS  = TESTS_RAW ? TESTS_RAW.split("|").map(t => t.trim()).filter(Boolean) : [];
+
+let USER_TESTS = [];
+if (TESTS_FILE) {
+  try {
+    const data = JSON.parse(require("fs").readFileSync(TESTS_FILE, "utf8"));
+    USER_TESTS = (data.tests || []).map(t => t.trim()).filter(Boolean);
+  } catch (e) { console.error("Failed to read tests file:", e.message); process.exit(1); }
+} else if (TESTS_RAW) {
+  USER_TESTS = TESTS_RAW.split("|").map(t => t.trim()).filter(Boolean);
+}
 
 // ── Post result to dashboard ──────────────────────────────────────────────────
 async function postResult(data) {
@@ -38,25 +57,53 @@ async function postResult(data) {
   }
 }
 
-// getHtml and httpsGet are now in utils.js
-
 // ── Ask AI to convert user descriptions to executable checks ─────────────────
 async function convertToChecks(html, userTests) {
   const stripped = stripHtml(html, 60000);  // from utils.js
 
   const prompt = `
 You are a senior QA engineer. A user has described test cases in plain English.
-Convert EACH description into an executable check against the HTML provided.
-
-Use EXACTLY one check type per test:
-1. html_contains      → "value": "exact string to find in HTML"
-2. html_not_contains  → "value": "string that must NOT be in HTML"
-3. attribute_value    → "elementId", "attribute", "expectedValue"
+Convert EACH description into a Playwright executable check that runs in a real browser.
 
 User test descriptions:
 ${userTests.map((t, i) => `${i + 1}. ${t}`).join("\n")}
 
-Return ONLY valid JSON:
+Use EXACTLY one check type per test. PREFER Playwright checks over HTML checks.
+
+PLAYWRIGHT CHECKS (run against the live rendered page — preferred):
+1. visible         → element is visible in the browser
+   { "check": "visible", "selector": "CSS_selector" }
+2. not_visible     → element is hidden or absent
+   { "check": "not_visible", "selector": "CSS_selector" }
+3. text_contains   → element's rendered text includes a string
+   { "check": "text_contains", "selector": "CSS_selector", "value": "expected text" }
+4. count_gte       → at least N matching elements exist
+   { "check": "count_gte", "selector": "CSS_selector", "expectedCount": 1 }
+5. attr_equals     → element attribute equals exact value
+   { "check": "attr_equals", "selector": "CSS_selector", "attribute": "type", "expectedValue": "password" }
+6. attr_contains   → element attribute contains substring
+   { "check": "attr_contains", "selector": "CSS_selector", "attribute": "href", "value": "/cart" }
+7. title_contains  → page tab title contains a string
+   { "check": "title_contains", "value": "substring" }
+8. click_then_visible → click an element, then verify something appears
+   { "check": "click_then_visible", "clickSelector": "CSS_sel", "resultSelector": "CSS_sel" }
+
+FALLBACK (only if no CSS selector can be reliably derived):
+9. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
+10. html_not_contains → { "check": "html_not_contains", "value": "string that must NOT appear" }
+
+CSS selector writing rules (critical for SPAs):
+- Text matching:   button:has-text('Sign In'), a:has-text('Login'), button:has-text('Add to Cart')
+- Aria attributes: [aria-label*='search'], [role='navigation'], [aria-label*='cart']
+- Partial classes: [class*='logo'], [class*='cart'], [class*='nav'], [class*='search']
+- Input types:     input[type='password'], input[type='email'], input[placeholder*='search']
+- Links:           a[href*='/login'], a[href*='/cart'], a[href='/']
+- Structural:      header, nav, footer, form, main
+- AVOID exact obfuscated class names like ".sc-abc123"
+
+Look at the HTML source below to find correct selectors that actually exist on the page.
+
+Return ONLY valid JSON — no markdown, no extra text:
 {
   "testCases": [
     {
@@ -64,41 +111,40 @@ Return ONLY valid JSON:
       "area": "Frontend",
       "name": "Short test name",
       "expected": "What correct behaviour looks like",
-      "check": "html_contains",
-      "value": "exact string to search for in HTML"
+      "check": "visible",
+      "selector": "header [class*='logo'], a[href='/']"
     }
   ]
 }
 
-HTML source:
+HTML source (use this to pick selectors that actually exist):
 ${stripped}`;
 
-  for (let m = 0; m < geminiModels.length; m++) {
-    const modelNames = ["Gemini 2.5 Flash", "Gemini 1.5 Flash"];
+  for (const { model, name: modelName } of geminiModels) {
     for (let attempt = 1; attempt <= 4; attempt++) {
       try {
-        const result = await geminiModels[m].generateContent(prompt);
-        console.log(`   🔵 AI converted ${userTests.length} descriptions → checks (${modelNames[m]})\n`);
+        const result = await model.generateContent(prompt);
+        console.log(`   🔵 AI converted ${userTests.length} descriptions → checks (${modelName})\n`);
         const raw = result.response.text().trim()
           .replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
         const parsed = JSON.parse(raw);
         return parsed.testCases ?? parsed;
       } catch (err) {
         const isQuota = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
-        if (isQuota) { console.log(`   ⚠️  ${modelNames[m]} quota — switching…`); break; }
+        const is404   = err.message?.includes("404");
+        if (isQuota || is404) { console.log(`   ⚠️  ${modelName} ${is404 ? "not available" : "quota exhausted"} — switching…`); break; }
         const is429 = err.message?.includes("429");
         const is503 = err.message?.includes("503");
-        if ((!is429 && !is503) || attempt === 4) throw err;
-        const wait = is503 ? 15000 : 30000;
-        console.log(`   ⏳ Retrying in ${wait / 1000}s…`);
+        if ((!is429 && !is503) || attempt === 4) { console.log(`   ⚠️  ${modelName} failed — switching…`); break; }
+        const wait = is503 ? 10000 : 20000;
+        console.log(`   ⏳ ${modelName} busy — retrying in ${wait / 1000}s… (${attempt}/4)`);
         await new Promise(r => setTimeout(r, wait));
       }
     }
   }
-  throw new Error("All AI models exhausted");
+  // All AI models failed — cannot proceed without AI
+  throw new Error("All AI models are currently unavailable (quota exhausted or service down). Please try again later.");
 }
-
-// runCheck is imported from utils.js
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
@@ -117,12 +163,21 @@ async function main() {
   USER_TESTS.forEach((t, i) => console.log(`   ${i + 1}. ${t}`));
   console.log("═".repeat(54) + "\n");
 
-  // Step 1: Fetch HTML
-  const html = await getHtml(TARGET_URL);  // from utils.js
+  // Step 1: Open browser — stays alive for the full run
+  const { html, page, browser } = await getPageAndHtml(TARGET_URL);
 
-  // Step 2: AI converts descriptions → executable checks
+  // Step 2: AI converts descriptions → executable Playwright checks
+  let testCases;
   console.log(`🤖 Converting ${USER_TESTS.length} test descriptions to executable checks…`);
-  const testCases = await convertToChecks(html, USER_TESTS);
+  try {
+    testCases = await convertToChecks(html, USER_TESTS);
+  } catch (err) {
+    if (browser) await browser.close();
+    throw err;
+  }
+
+  const mode = page ? "Playwright (live)" : "HTML source";
+  console.log(`\n   ▶  Running ${testCases.length} checks in ${mode} mode\n`);
 
   // Step 3: Run checks
   const failures = [];
@@ -133,7 +188,7 @@ async function main() {
     await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "running" });
 
     try {
-      const result = runCheck(html, tc);
+      const result = await executeCheck(page, html, tc);
       if (result.passed) {
         console.log("✅ PASS");
         passed++;
@@ -158,7 +213,8 @@ async function main() {
   }
 
   // Step 4: AI classify failures → Jira
-  let jiraCount = 0;
+  let jiraCount      = 0;
+  let duplicateCount = 0;
   if (failures.length > 0) {
     for (const f of failures) {
       await postResult({ id: f.id, name: f.title, status: "classifying" });
@@ -169,16 +225,20 @@ async function main() {
         await postResult({
           id: r.id, name: failure?.title || r.id, area: failure?.area,
           status: "fail", actual: failure?.errorValue,
-          category: r.category, reason: r.reason, jiraUrl: r.jiraUrl
+          category: r.category, reason: r.reason, jiraUrl: r.jiraUrl,
+          duplicate: r.duplicate, repeatCount: r.repeatCount,
+          pendingApproval: r.pendingApproval || false
         });
       });
-      jiraCount = results.filter(r => r.logged).length;
+      jiraCount      = results.filter(r => r.logged).length;
+      duplicateCount = results.filter(r => r.duplicate).length;
     } catch (err) {
       console.log(`\n💥 AI Error — ${err.message}\n`);
     }
   }
 
   await postResult({ id: "__done__", runFinished: true });
+  if (browser) await browser.close();
 
   // Save test cases and run results to storage
   saveTestCases(siteName, SPRINT_NAME, testCases, { source: "manual", url: TARGET_URL, userTests: USER_TESTS });
@@ -190,6 +250,8 @@ async function main() {
   console.log(`   ✅ Passed       : ${passed}`);
   console.log(`   ❌ Failed       : ${testCases.length - passed}`);
   console.log(`   🎫 Jira tickets : ${jiraCount} created`);
+  if (duplicateCount > 0)
+    console.log(`   🔁 Repeated     : ${duplicateCount} bug(s) already in Jira (skipped)`);
   console.log(`   💾 Saved to     : test-suites/${siteName}/${SPRINT_NAME}/`);
   console.log("═".repeat(54) + "\n");
 }

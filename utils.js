@@ -40,33 +40,48 @@ function httpsGet(targetUrl, redirectCount = 0) {
   });
 }
 
-// ── Fetch HTML: local shop.html → Playwright → HTTPS fallback ────────────────
+// ── Fetch HTML only — closes browser after (backward compat) ─────────────────
 async function getHtml(targetUrl) {
   if (!targetUrl) {
     return fs.readFileSync(path.join(__dirname, "shop.html"), "utf8");
   }
+  const { html, browser } = await getPageAndHtml(targetUrl);
+  if (browser) await browser.close();
+  return html;
+}
 
-  console.log(`\n🌐 Fetching HTML from: ${targetUrl}\n`);
-
-  // Try Playwright (full JS rendering, handles SPAs & bot challenges)
-  try {
-    const { chromium } = require("playwright");
-    const browser = await chromium.launch({ headless: true });
-    const page    = await browser.newPage({
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
-    });
-    try {
-      await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
-      await page.waitForTimeout(3000);
-      const html = await page.content();
-      console.log(`   ✅ Fetched ${Math.round(html.length / 1024)} KB via Playwright\n`);
-      return html;
-    } finally { await browser.close(); }
-  } catch (_) {
-    console.log(`   ⚠️  Playwright unavailable — using HTTPS fetch (SSL-bypass)…\n`);
+// ── Open Playwright, keep browser alive for test execution ───────────────────
+// Returns { html, page, browser }  — caller MUST call browser.close() when done
+async function getPageAndHtml(targetUrl) {
+  if (!targetUrl) {
+    const html = fs.readFileSync(path.join(__dirname, "shop.html"), "utf8");
+    return { html, page: null, browser: null };
   }
 
-  return httpsGet(targetUrl);
+  console.log(`\n🌐 Launching Playwright for: ${targetUrl}\n`);
+
+  try {
+    const { chromium } = require("playwright");
+    const browser = await chromium.launch({
+      headless: true,
+      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+    });
+    const page = await browser.newPage({
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"
+    });
+    // Give the page a reasonable viewport
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(targetUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+    // Wait for any JS-driven rendering to settle
+    await page.waitForTimeout(3000);
+    const html = await page.content();
+    console.log(`   ✅ Page loaded — ${Math.round(html.length / 1024)} KB (browser stays open for live checks)\n`);
+    return { html, page, browser };
+  } catch (err) {
+    console.log(`   ⚠️  Playwright failed (${err.message.slice(0, 80)}) — HTTPS fallback…\n`);
+    const html = await httpsGet(targetUrl);
+    return { html, page: null, browser: null };
+  }
 }
 
 // ── Strip HTML noise for AI context ──────────────────────────────────────────
@@ -81,7 +96,138 @@ function stripHtml(html, maxLen = 80000) {
     .slice(0, maxLen);
 }
 
-// ── Execute a single HTML-based check ────────────────────────────────────────
+// ── Playwright check types (these require a live page object) ─────────────────
+const PLAYWRIGHT_CHECKS = new Set([
+  "visible", "not_visible", "text_contains", "count_gte",
+  "attr_equals", "attr_contains", "url_contains", "title_contains",
+  "click_then_visible"
+]);
+
+// ── Execute a Playwright-based check against a live rendered page ─────────────
+async function runPlaywrightCheck(page, tc) {
+  const sel = tc.selector;
+  try {
+    switch (tc.check) {
+
+      case "visible": {
+        const vis = await page.locator(sel).first().isVisible({ timeout: 5000 }).catch(() => false);
+        return {
+          passed: vis,
+          actual: vis
+            ? `Visible: "${sel}"`
+            : `Not visible or missing: "${sel}"`
+        };
+      }
+
+      case "not_visible": {
+        const vis = await page.locator(sel).first().isVisible({ timeout: 3000 }).catch(() => false);
+        return {
+          passed: !vis,
+          actual: !vis
+            ? `Correctly absent/hidden: "${sel}"`
+            : `Should be hidden but is visible: "${sel}"`
+        };
+      }
+
+      case "text_contains": {
+        const loc  = page.locator(sel).first();
+        const text = await loc.textContent({ timeout: 5000 }).catch(() => null);
+        if (text === null) return { passed: false, actual: `Element not found: "${sel}"` };
+        const found = text.toLowerCase().includes(tc.value.toLowerCase());
+        return {
+          passed: found,
+          actual: found
+            ? `Text found: "${tc.value}"`
+            : `Text missing: "${tc.value}" — got: "${text.replace(/\s+/g, " ").slice(0, 100)}"`
+        };
+      }
+
+      case "count_gte": {
+        const count    = await page.locator(sel).count();
+        const expected = parseInt(tc.expectedCount ?? 1, 10);
+        return {
+          passed: count >= expected,
+          actual: count >= expected
+            ? `Found ${count} element(s) (expected ≥${expected})`
+            : `Expected ≥${expected}, found only ${count} for "${sel}"`
+        };
+      }
+
+      case "attr_equals": {
+        const val   = await page.locator(sel).first().getAttribute(tc.attribute, { timeout: 5000 }).catch(() => null);
+        const match = val === tc.expectedValue;
+        return {
+          passed: match,
+          actual: match
+            ? `${tc.attribute}="${val}"`
+            : `${tc.attribute}="${val ?? "(absent)"}" — expected "${tc.expectedValue}" on "${sel}"`
+        };
+      }
+
+      case "attr_contains": {
+        const val   = await page.locator(sel).first().getAttribute(tc.attribute, { timeout: 5000 }).catch(() => null);
+        const match = val !== null && val.includes(tc.value);
+        return {
+          passed: match,
+          actual: match
+            ? `${tc.attribute} contains "${tc.value}"`
+            : `${tc.attribute}="${val ?? "(absent)"}" missing "${tc.value}" on "${sel}"`
+        };
+      }
+
+      case "url_contains": {
+        const url   = page.url();
+        const found = url.includes(tc.value);
+        return {
+          passed: found,
+          actual: found
+            ? `URL contains "${tc.value}"`
+            : `URL "${url}" does not contain "${tc.value}"`
+        };
+      }
+
+      case "title_contains": {
+        const title = await page.title();
+        const found = title.toLowerCase().includes(tc.value.toLowerCase());
+        return {
+          passed: found,
+          actual: found
+            ? `Page title contains "${tc.value}"`
+            : `Page title "${title}" does not contain "${tc.value}"`
+        };
+      }
+
+      case "click_then_visible": {
+        const originalUrl = page.url();
+        try {
+          await page.locator(tc.clickSelector).first().click({ timeout: 5000 });
+          await page.waitForTimeout(1500);
+        } catch (clickErr) {
+          return { passed: false, actual: `Could not click "${tc.clickSelector}": ${clickErr.message.slice(0, 80)}` };
+        }
+        const vis = await page.locator(tc.resultSelector).first().isVisible({ timeout: 5000 }).catch(() => false);
+        // Navigate back if a click caused page navigation
+        if (page.url() !== originalUrl) {
+          await page.goto(originalUrl, { waitUntil: "domcontentloaded", timeout: 15000 }).catch(() => {});
+          await page.waitForTimeout(1000);
+        }
+        return {
+          passed: vis,
+          actual: vis
+            ? `After clicking "${tc.clickSelector}": "${tc.resultSelector}" appeared ✓`
+            : `After clicking "${tc.clickSelector}": "${tc.resultSelector}" did not appear`
+        };
+      }
+
+      default:
+        return { passed: false, actual: `Unknown Playwright check type: "${tc.check}"` };
+    }
+  } catch (err) {
+    return { passed: false, actual: `Check error: ${err.message.slice(0, 120)}` };
+  }
+}
+
+// ── HTML-based check (legacy + fallback) ─────────────────────────────────────
 function runCheck(html, tc) {
   switch (tc.check) {
     case "attribute_value": {
@@ -105,8 +251,32 @@ function runCheck(html, tc) {
       return { passed: !found, actual: !found ? "Correctly absent" : `Found (should not exist): "${tc.value}"` };
     }
     default:
-      return { passed: false, actual: `Unknown check type: ${tc.check}` };
+      return { passed: false, actual: `Unknown check type: "${tc.check}"` };
   }
 }
 
-module.exports = { httpsGet, getHtml, stripHtml, runCheck };
+// ── Unified check runner ──────────────────────────────────────────────────────
+// Uses Playwright when: (1) a live page is available AND (2) check is a Playwright type.
+// Falls back to HTML string checks automatically.
+async function executeCheck(page, html, tc) {
+  if (page && PLAYWRIGHT_CHECKS.has(tc.check)) {
+    return runPlaywrightCheck(page, tc);
+  }
+  // Playwright check type but no live page — treat as a real UI failure, not an automation issue
+  if (!page && PLAYWRIGHT_CHECKS.has(tc.check)) {
+    const target = tc.selector || tc.value || tc.attribute || "";
+    return { passed: false, actual: `UI check failed: "${target}" could not be verified on the live page` };
+  }
+  return runCheck(html, tc);
+}
+
+module.exports = {
+  httpsGet,
+  getHtml,
+  getPageAndHtml,
+  stripHtml,
+  runCheck,
+  runPlaywrightCheck,
+  executeCheck,
+  PLAYWRIGHT_CHECKS
+};

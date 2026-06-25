@@ -1,6 +1,8 @@
 require("dotenv").config();
 const { spawn } = require("child_process");
 const path      = require("path");
+const fs        = require("fs");
+const os        = require("os");
 
 // ── Known site shortcuts ──────────────────────────────────────────────────────
 const KNOWN_SITES = {
@@ -80,17 +82,45 @@ function parseIntent(message) {
   }
 
   // ── MANUAL_TESTS — user provides their own test descriptions ─────────────────
-  const manualWords = ["manual", "my test", "i want to check", "i want to verify", "custom test", "manually"];
-  const hasColon    = msg.includes(":");
-  const hasManual   = manualWords.some(w => msg.includes(w));
+  const manualWords    = ["manual", "my test", "i want to check", "i want to verify", "custom test", "manually"];
+  const generateWords2 = ["generate", "analyse", "analyze", "create test", "scan", "check website", "test website", "find bugs in"];
+  // Strip URLs before checking for colons so "https://..." doesn't trigger manual mode
+  const hasColon   = msg.replace(/https?:\/\/[^\s]*/g, "").includes(":");
+  const hasManual  = manualWords.some(w => msg.includes(w));
+  const isGenerate = generateWords2.some(w => msg.includes(w));
 
-  if (hasManual || (hasColon && (url || msg.includes("shop")))) {
-    const colonIdx = message.indexOf(":");
-    const rawTests = colonIdx !== -1 ? message.slice(colonIdx + 1) : message;
-    const tests = rawTests
-      .split(/[,\n]|\d+\.\s+/)
-      .map(t => t.trim())
-      .filter(t => t.length > 3);
+  // Detect pasted test cases: TC-01, TC01, lines with "Action:" / "Expected:" patterns
+  const hasTcPattern  = /\bTC[-\s]?\d+\b/i.test(message);
+  const hasActionExp  = /\b(action|expected|steps?|verify|check)\s*:/i.test(message);
+  const isMultiLine   = message.split("\n").filter(l => l.trim().length > 4).length >= 2;
+  const isPastedTests = (hasTcPattern || (hasActionExp && isMultiLine));
+
+  if (!isGenerate && (hasManual || isPastedTests || (hasColon && (url || msg.includes("shop"))))) {
+    let tests = [];
+
+    if (isPastedTests) {
+      // Parse pasted TC blocks — split by TC-XX or numbered lines
+      tests = message
+        .split(/\n(?=TC[-\s]?\d+|\d+[\.\)])/i)
+        .map(block => {
+          // Use the first non-empty line of each block as the test name
+          const firstLine = block.split("\n").map(l => l.trim()).find(l => l.length > 3);
+          return firstLine || "";
+        })
+        .filter(t => t.length > 3);
+
+      // Fallback: just use every non-empty line
+      if (tests.length === 0) {
+        tests = message.split("\n").map(t => t.trim()).filter(t => t.length > 3);
+      }
+    } else {
+      const colonIdx = message.indexOf(":");
+      const rawTests = colonIdx !== -1 ? message.slice(colonIdx + 1) : message;
+      tests = rawTests
+        .split(/[,\n]|\d+\.\s+/)
+        .map(t => t.trim())
+        .filter(t => t.length > 3);
+    }
 
     if (tests.length > 0) {
       const label = url ? new URL(url).hostname : "shop.html";
@@ -199,7 +229,11 @@ async function handleChat(message, send) {
 
   // ── USER_STORY — story-runner.js ─────────────────────────────────────────
   if (intent.intent === "USER_STORY") {
-    const args = ["story-runner.js", "--story", intent.story, "--sprint", intent.sprint, "--count", String(intent.count)];
+    // Write story to temp file to avoid shell escaping issues
+    const tmpFile = path.join(os.tmpdir(), `qa-story-${Date.now()}.json`);
+    fs.writeFileSync(tmpFile, JSON.stringify({ story: intent.story }), "utf8");
+
+    const args = ["story-runner.js", "--story-file", tmpFile, "--sprint", intent.sprint, "--count", String(intent.count)];
     if (intent.url) args.push("--url", intent.url);
 
     send({ type: "log", text: [
@@ -211,18 +245,23 @@ async function handleChat(message, send) {
       ""
     ].join("\n") });
     await runProcess("node", args, send);
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
     return;
   }
 
   // ── MANUAL_TESTS ──────────────────────────────────────────────────────────
   if (intent.intent === "MANUAL_TESTS") {
-    const args = ["manual-runner.js"];
-    if (intent.url)           args.push("--url",   intent.url);
-    if (intent.sprint)        args.push("--sprint", intent.sprint);
-    if (intent.tests?.length) args.push("--tests", intent.tests.join("|"));
+    // Write tests to temp file to avoid shell escaping issues with special chars
+    const tmpFile = path.join(os.tmpdir(), `qa-tests-${Date.now()}.json`);
+    fs.writeFileSync(tmpFile, JSON.stringify({ tests: intent.tests }), "utf8");
+
+    const args = ["manual-runner.js", "--tests-file", tmpFile];
+    if (intent.url)    args.push("--url",    intent.url);
+    if (intent.sprint) args.push("--sprint", intent.sprint);
 
     send({ type: "log", text: `📝 Manual tests:\n${intent.tests.map((t, i) => `   ${i + 1}. ${t}`).join("\n")}\n\n` });
     await runProcess("node", args, send);
+    try { fs.unlinkSync(tmpFile); } catch (_) {}
     return;
   }
 
