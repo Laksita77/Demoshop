@@ -220,7 +220,8 @@ async function sendApprovalEmail({ title, category, expected, actual, reason, fi
 
   } catch (err) {
 
-    console.log(`   ⚠️  Approval email failed: ${err.message}`);
+    console.error(`   ❌ Approval email FAILED: ${err.message}`);
+    console.error(`      SMTP → host:${process.env.SMTP_HOST} port:${process.env.SMTP_PORT} from:${process.env.EMAIL_FROM} to:${to}`);
 
   }
 

@@ -112,6 +112,7 @@
     .s-pass        { background:#e8f0e8; color:var(--green); }
     .s-fail        { background:#f2e8e8; color:var(--red); }
     .s-error       { background:#f2ece4; color:var(--orange); }
+    .s-awaiting    { background:#fef9e8; color:#92640a; animation:blink 1.4s ease-in-out infinite; }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
 
     /* Category badges */
@@ -346,14 +347,15 @@ const STATUS_HTML = {
   classifying: `<span class="status s-classifying">🤖 Classifying…</span>`,
   pass:        `<span class="status s-pass">✅ Pass</span>`,
   fail:        `<span class="status s-fail">❌ Fail</span>`,
-  error:       `<span class="status s-error">💥 Error</span>`
+  error:       `<span class="status s-error">💥 Error</span>`,
+  awaiting:    `<span class="status s-awaiting">⏳ Awaiting Approval</span>`
 };
 
 /* ── Live Run ────────────────────────────────────────────── */
 function render(run) {
   if (!run || !run.id) return;
   const tests    = (run.tests||[]).filter(t=>t.id!=="__done__");
-  const done     = tests.filter(t=>["pass","fail","error"].includes(t.status));
+  const done     = tests.filter(t=>["pass","fail","error","awaiting"].includes(t.status));
   const passed   = tests.filter(t=>t.status==="pass").length;
   const failed   = tests.filter(t=>t.status==="fail"||t.status==="error").length;
   const aiDone   = tests.filter(t=>t.category).length;

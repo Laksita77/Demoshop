@@ -241,9 +241,11 @@ async function main() {
         const failure = failures.find(f => f.id === r.id);
         await postResult({
           id: r.id, name: failure?.title || r.id, area: failure?.area,
-          status: "fail", actual: failure?.errorValue,
+          status: r.pendingApproval ? "awaiting" : "fail",
+          actual: failure?.errorValue,
           category: r.category, reason: r.reason, jiraUrl: r.jiraUrl,
-          duplicate: r.duplicate, repeatCount: r.repeatCount
+          duplicate: r.duplicate, repeatCount: r.repeatCount,
+          pendingApproval: r.pendingApproval || false
         });
       });
       jiraCount      = results.filter(r => r.logged).length;
