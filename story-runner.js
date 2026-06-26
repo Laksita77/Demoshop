@@ -241,7 +241,7 @@ async function main() {
         const failure = failures.find(f => f.id === r.id);
         await postResult({
           id: r.id, name: failure?.title || r.id, area: failure?.area,
-          status: r.pendingApproval ? "awaiting" : "fail",
+          status: r.duplicate ? "duplicate" : r.pendingApproval ? "awaiting" : "fail",
           actual: failure?.errorValue,
           category: r.category, reason: r.reason, jiraUrl: r.jiraUrl,
           duplicate: r.duplicate, repeatCount: r.repeatCount,

@@ -113,6 +113,7 @@
     .s-fail        { background:#f2e8e8; color:var(--red); }
     .s-error       { background:#f2ece4; color:var(--orange); }
     .s-awaiting    { background:#fef9e8; color:#92640a; animation:blink 1.4s ease-in-out infinite; }
+    .s-duplicate   { background:#f0ece8; color:#7a5c2a; }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
 
     /* Category badges */
@@ -272,6 +273,9 @@
   <div class="chat-suggestions">
     <span class="chip" onclick="sendChip(this)">🌐 Generate 6 tests for https://myntra.com</span>
     <span class="chip" onclick="sendChip(this)">📋 User story: As a user I want to search for products on https://snapdeal.com</span>
+    <span class="chip" onclick="sendChip(this)">🔐 Test login and form validations on https://automationexercise.com</span>
+    <span class="chip" onclick="sendChip(this)">📝 Validate registration form inputs on https://automationexercise.com</span>
+    <span class="chip" onclick="sendChip(this)">🛒 Test checkout flow and form validation on https://automationexercise.com</span>
     <span class="chip" onclick="sendChip(this)">📚 Show test history</span>
   </div>
   <div class="chat-input-area">
@@ -348,14 +352,15 @@ const STATUS_HTML = {
   pass:        `<span class="status s-pass">✅ Pass</span>`,
   fail:        `<span class="status s-fail">❌ Fail</span>`,
   error:       `<span class="status s-error">💥 Error</span>`,
-  awaiting:    `<span class="status s-awaiting">⏳ Awaiting Approval</span>`
+  awaiting:    `<span class="status s-awaiting">⏳ Awaiting Approval</span>`,
+  duplicate:   `<span class="status s-duplicate">🔁 Duplicate</span>`
 };
 
 /* ── Live Run ────────────────────────────────────────────── */
 function render(run) {
   if (!run || !run.id) return;
   const tests    = (run.tests||[]).filter(t=>t.id!=="__done__");
-  const done     = tests.filter(t=>["pass","fail","error","awaiting"].includes(t.status));
+  const done     = tests.filter(t=>["pass","fail","error","awaiting","duplicate"].includes(t.status));
   const passed   = tests.filter(t=>t.status==="pass").length;
   const failed   = tests.filter(t=>t.status==="fail"||t.status==="error").length;
   const aiDone   = tests.filter(t=>t.category).length;
