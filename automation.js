@@ -498,22 +498,30 @@ async function runBatchAutomation(failures, onResult = null) {
   console.log(`\n🤖 Sending ${failures.length} failure(s) to Gemini for batch classification…\n`);
 
   const prompt = `
-You are a senior QA engineer. Classify ALL of these failing test cases from a DemoShop e-commerce app in ONE response.
+You are a senior QA engineer. Classify ALL of these failing test cases in ONE response.
 
-Categories:
-- Security    → password exposure, card data issues, auth bypass, data leaks
-- Backend     → wrong calculations, logic errors, missing validation
-- Frontend    → UI display bugs, broken labels, wrong counts, case-sensitivity
-- Performance → inefficient algorithms, wrong sort methods
-- Trivial     → cosmetic issues, minor text errors
+IMPORTANT: Base your classification ONLY on the "Actual" error — what technically failed at runtime. Ignore the test name/description entirely.
+
+Categories and what each means technically:
+- Frontend    → UI element missing or not rendered, selector not found in DOM, form field absent, CSS layout broken, text/label wrong, element not visible
+- Backend     → redirect to wrong URL after submit, authentication rejected valid credentials, API returned wrong data, server-side validation missing, wrong HTTP response
+- Security    → credentials exposed in URL/logs, auth bypass possible, XSS/injection detected, sensitive data leaked
+- Performance → page load timeout, connection timeout, slow response (>5s)
+- Trivial     → minor cosmetic difference, non-critical text mismatch
+
+Classification rules based on Actual error:
+- "not found after submit" or "element not found" or "not visible" → Frontend
+- "could not fill field" or "selector not found" → Frontend
+- "URL does not contain" or "redirected to /login" after valid submit → Backend
+- "connection timeout" or "ENETUNREACH" → Performance
+- "auth bypass" or "token in URL" or "XSS" → Security
 
 Test cases to classify:
 ${failures.map((f, i) => `
 [${i + 1}] ID: ${f.id}
-    Name    : ${f.title}
-    Expected: ${f.expected}
-    Actual  : ${f.errorValue}
-    Location: ${f.culprit}
+    Actual error : ${f.errorValue}
+    Expected     : ${f.expected}
+    Test name    : ${f.title}
 `).join("")}
 
 Reply ONLY with a valid JSON object containing a "results" array:
@@ -522,8 +530,8 @@ Reply ONLY with a valid JSON object containing a "results" array:
     {
       "id": "TC-XX",
       "category": "Security|Backend|Frontend|Performance|Trivial",
-      "classificationReason": "One sentence explaining why",
-      "brokenCode": "One sentence describing the broken code",
+      "classificationReason": "One sentence based on the actual error, not the test name",
+      "brokenCode": "One sentence describing what technically broke",
       "fixes": ["Fix 1", "Fix 2", "Fix 3"],
       "emailBody": "Professional 2-sentence summary for the dev team"
     }
@@ -693,12 +701,14 @@ Location: ${culprit}
 Severity: ${errorLevel}
 Open for: ${daysOld} day(s)
 
-Classify this bug into EXACTLY one of these categories:
-- Security    → password exposure, card data issues, auth bypass, data leaks
-- Backend     → wrong calculations, logic errors, missing validation on server
-- Frontend    → UI display bugs, broken labels, wrong counts, case-sensitivity
-- Performance → inefficient algorithms, wrong sort methods, unnecessary recalculations
-- Trivial     → cosmetic issues, minor text errors, low-impact UI glitches
+Classify this bug based on the ACTUAL ERROR — what technically failed at runtime, not the name of the test.
+
+Categories:
+- Frontend    → UI element missing/not rendered, selector not found in DOM, form field absent, element not visible
+- Backend     → redirect to wrong URL, auth rejected valid credentials, API returned wrong data, server-side logic broken
+- Security    → credentials exposed, auth bypass, XSS/injection detected, sensitive data leaked
+- Performance → connection timeout, page load timeout, slow response
+- Trivial     → minor cosmetic difference, non-critical text mismatch
 
 Reply ONLY with valid JSON (no markdown, no code fences):
 {
