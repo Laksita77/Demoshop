@@ -500,21 +500,24 @@ async function runBatchAutomation(failures, onResult = null) {
   const prompt = `
 You are a senior QA engineer. Classify ALL of these failing test cases in ONE response.
 
-IMPORTANT: Base your classification ONLY on the "Actual" error — what technically failed at runtime. Ignore the test name/description entirely.
+IMPORTANT: Use the "Actual" error as the primary signal. Use the "Test name" as a secondary hint ONLY when the error is ambiguous.
+
+SECURITY OVERRIDE — classify as Security if the test name mentions ANY of these, regardless of the actual error:
+- SQL injection, SQLi, injection attack, XSS, cross-site scripting, CSRF, auth bypass, security vulnerability, data exposure, sensitive data
 
 Categories and what each means technically:
+- Security    → SQL injection not blocked, XSS not sanitized, CSRF missing, auth bypass, credentials/tokens exposed, sensitive data leaked
 - Frontend    → UI element missing or not rendered, selector not found in DOM, form field absent, CSS layout broken, text/label wrong, element not visible
-- Backend     → redirect to wrong URL after submit, authentication rejected valid credentials, API returned wrong data, server-side validation missing, wrong HTTP response
-- Security    → credentials exposed in URL/logs, auth bypass possible, XSS/injection detected, sensitive data leaked
+- Backend     → redirect to wrong URL after submit, authentication rejected valid credentials, API returned wrong data, wrong HTTP response, missing business logic
 - Performance → page load timeout, connection timeout, slow response (>5s)
 - Trivial     → minor cosmetic difference, non-critical text mismatch
 
 Classification rules based on Actual error:
+- Test name mentions SQL injection / XSS / injection / security → Security (override everything else)
 - "not found after submit" or "element not found" or "not visible" → Frontend
 - "could not fill field" or "selector not found" → Frontend
 - "URL does not contain" or "redirected to /login" after valid submit → Backend
 - "connection timeout" or "ENETUNREACH" → Performance
-- "auth bypass" or "token in URL" or "XSS" → Security
 
 Test cases to classify:
 ${failures.map((f, i) => `
@@ -701,12 +704,12 @@ Location: ${culprit}
 Severity: ${errorLevel}
 Open for: ${daysOld} day(s)
 
-Classify this bug based on the ACTUAL ERROR — what technically failed at runtime, not the name of the test.
+Classify this bug. SECURITY OVERRIDE: if the error type or title mentions SQL injection, XSS, CSRF, auth bypass, or data exposure — classify as Security regardless of the error message.
 
 Categories:
+- Security    → SQL injection not blocked, XSS not sanitized, auth bypass, credentials/tokens exposed, sensitive data leaked
 - Frontend    → UI element missing/not rendered, selector not found in DOM, form field absent, element not visible
 - Backend     → redirect to wrong URL, auth rejected valid credentials, API returned wrong data, server-side logic broken
-- Security    → credentials exposed, auth bypass, XSS/injection detected, sensitive data leaked
 - Performance → connection timeout, page load timeout, slow response
 - Trivial     → minor cosmetic difference, non-critical text mismatch
 
