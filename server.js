@@ -224,7 +224,13 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, { "Content-Type": "text/html" });
 
     processApproval(token)
-      .then(({ jiraUrl, jiraKey, category, title }) => {
+      .then(({ jiraUrl, jiraKey, category, title, testCase }) => {
+        // Update dashboard live
+        const idx = currentRun.tests.findIndex(t => t.id === testCase);
+        if (idx >= 0) {
+          Object.assign(currentRun.tests[idx], { jiraUrl, pendingApproval: false });
+          broadcast(currentRun);
+        }
         res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8">
 <title>Bug Approved</title>
 <style>body{font-family:Arial,sans-serif;background:#f0fdf4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
@@ -261,7 +267,13 @@ h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><b
     res.writeHead(200, { "Content-Type": "text/html" });
 
     try {
-      const { category, title } = declineApproval(token);
+      const { category, title, testCase } = declineApproval(token);
+      // Update dashboard live
+      const idx = currentRun.tests.findIndex(t => t.id === testCase);
+      if (idx >= 0) {
+        Object.assign(currentRun.tests[idx], { status: "declined", pendingApproval: false });
+        broadcast(currentRun);
+      }
       res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Bug Declined</title>
 <style>body{font-family:Arial,sans-serif;background:#fef2f2;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
 .card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}

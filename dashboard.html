@@ -114,6 +114,7 @@
     .s-error       { background:#f2ece4; color:var(--orange); }
     .s-awaiting    { background:#fef9e8; color:#92640a; animation:blink 1.4s ease-in-out infinite; }
     .s-duplicate   { background:#f0ece8; color:#7a5c2a; }
+    .s-declined    { background:#fde8e8; color:#c62828; }
     @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.45} }
 
     /* Category badges */
@@ -353,14 +354,15 @@ const STATUS_HTML = {
   fail:        `<span class="status s-fail">❌ Fail</span>`,
   error:       `<span class="status s-error">💥 Error</span>`,
   awaiting:    `<span class="status s-awaiting">⏳ Awaiting Approval</span>`,
-  duplicate:   `<span class="status s-duplicate">🔁 Duplicate</span>`
+  duplicate:   `<span class="status s-duplicate">🔁 Duplicate</span>`,
+  declined:    `<span class="status s-declined">🚫 Declined</span>`
 };
 
 /* ── Live Run ────────────────────────────────────────────── */
 function render(run) {
   if (!run || !run.id) return;
   const tests    = (run.tests||[]).filter(t=>t.id!=="__done__");
-  const done     = tests.filter(t=>["pass","fail","error","awaiting","duplicate"].includes(t.status));
+  const done     = tests.filter(t=>["pass","fail","error","awaiting","duplicate","declined"].includes(t.status));
   const passed   = tests.filter(t=>t.status==="pass").length;
   const failed   = tests.filter(t=>t.status==="fail"||t.status==="error").length;
   const aiDone   = tests.filter(t=>t.category).length;
@@ -400,7 +402,9 @@ function render(run) {
            🔁 Repeated ×${repeatCount}<br>
            <a href="${t.jiraUrl||"#"}" target="_blank" style="color:var(--orange);text-decoration:underline;font-size:.7rem">${repeatKey}</a>
          </span>`
-      : t.jiraUrl
+      : t.status === "declined"
+        ? `<span style="color:#c62828;font-size:.74rem;font-weight:600;">🚫 Declined</span>`
+        : t.jiraUrl
         ? `<a class="jira-link" href="${t.jiraUrl}" target="_blank">🎫 ${t.jiraUrl.split("/browse/")[1]||"View"}</a>`
         : t.pendingApproval
           ? `<span style="color:#f9a825;font-size:.74rem;font-weight:600;">⏳ Awaiting Approval</span>`

@@ -804,7 +804,7 @@ async function processApproval(token) {
     testCase: bugData.testCase
   });
 
-  return { jiraUrl, jiraKey, category: bugData.category, title: bugData.title };
+  return { jiraUrl, jiraKey, category: bugData.category, title: bugData.title, testCase: bugData.testCase };
 }
 
 // ── Decline: dismiss the pending approval without creating any Jira ticket ────
@@ -813,7 +813,7 @@ function declineApproval(token) {
   if (!approval) throw new Error("Approval token not found");
   if (approval.status !== "pending") throw new Error(`Already ${approval.status}`);
   markApprovalStatus(token, "declined");
-  return { category: approval.bugData.category, title: approval.bugData.title };
+  return { category: approval.bugData.category, title: approval.bugData.title, testCase: approval.bugData.testCase };
 }
 
 module.exports = { runAutomation, runBatchAutomation, processApproval, declineApproval };
