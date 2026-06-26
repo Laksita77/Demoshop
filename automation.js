@@ -502,21 +502,21 @@ You are a senior QA engineer. Classify ALL of these failing test cases in ONE re
 
 IMPORTANT: Use the "Actual" error as the primary signal. Use the "Test name" as a secondary hint ONLY when the error is ambiguous.
 
-SECURITY OVERRIDE — classify as Security if the test name mentions ANY of these, regardless of the actual error:
-- SQL injection, SQLi, injection attack, XSS, cross-site scripting, CSRF, auth bypass, security vulnerability, data exposure, sensitive data
+OVERRIDES — apply these first before anything else:
+1. SECURITY: test name mentions SQL injection, XSS, CSRF, injection attack, auth bypass, security vulnerability, data exposure → Security
+2. BACKEND: test name mentions login, authentication, credentials, password, sign in, sign up, register, redirect → Backend
 
-Categories and what each means technically:
-- Security    → SQL injection not blocked, XSS not sanitized, CSRF missing, auth bypass, credentials/tokens exposed, sensitive data leaked
-- Frontend    → UI element missing or not rendered, selector not found in DOM, form field absent, CSS layout broken, text/label wrong, element not visible
-- Backend     → redirect to wrong URL after submit, authentication rejected valid credentials, API returned wrong data, wrong HTTP response, missing business logic
-- Performance → page load timeout, connection timeout, slow response (>5s)
+Categories:
+- Security    → SQL injection not blocked, XSS not sanitized, auth bypass, credentials/tokens exposed, sensitive data leaked
+- Backend     → login/auth failure, redirect to wrong URL, API returned wrong data, server-side logic broken
+- Frontend    → UI element missing/not rendered, non-auth form field absent, CSS layout broken, element not visible
+- Performance → connection timeout, page load timeout, slow response (>5s)
 - Trivial     → minor cosmetic difference, non-critical text mismatch
 
-Classification rules based on Actual error:
-- Test name mentions SQL injection / XSS / injection / security → Security (override everything else)
+Classification rules based on Actual error (used only if no override applies):
 - "not found after submit" or "element not found" or "not visible" → Frontend
 - "could not fill field" or "selector not found" → Frontend
-- "URL does not contain" or "redirected to /login" after valid submit → Backend
+- "URL does not contain" or "redirected to /login" → Backend
 - "connection timeout" or "ENETUNREACH" → Performance
 
 Test cases to classify:
@@ -704,12 +704,14 @@ Location: ${culprit}
 Severity: ${errorLevel}
 Open for: ${daysOld} day(s)
 
-Classify this bug. SECURITY OVERRIDE: if the error type or title mentions SQL injection, XSS, CSRF, auth bypass, or data exposure — classify as Security regardless of the error message.
+Classify this bug using these overrides first:
+1. SECURITY: title/error mentions SQL injection, XSS, CSRF, injection, auth bypass, data exposure → Security
+2. BACKEND: title mentions login, authentication, credentials, password, sign in, redirect → Backend
 
 Categories:
-- Security    → SQL injection not blocked, XSS not sanitized, auth bypass, credentials/tokens exposed, sensitive data leaked
-- Frontend    → UI element missing/not rendered, selector not found in DOM, form field absent, element not visible
-- Backend     → redirect to wrong URL, auth rejected valid credentials, API returned wrong data, server-side logic broken
+- Security    → SQL injection not blocked, XSS not sanitized, auth bypass, credentials exposed
+- Backend     → login/auth failure, wrong redirect, API wrong data, server-side logic broken
+- Frontend    → UI element missing/not rendered, form field absent, element not visible
 - Performance → connection timeout, page load timeout, slow response
 - Trivial     → minor cosmetic difference, non-critical text mismatch
 
