@@ -100,7 +100,7 @@ function stripHtml(html, maxLen = 80000) {
 const PLAYWRIGHT_CHECKS = new Set([
   "visible", "not_visible", "text_contains", "count_gte",
   "attr_equals", "attr_contains", "url_contains", "title_contains",
-  "click_then_visible"
+  "click_then_visible", "fill_and_submit"
 ]);
 
 // ── Execute a Playwright-based check against a live rendered page ─────────────
@@ -217,6 +217,51 @@ async function runPlaywrightCheck(page, tc) {
             ? `After clicking "${tc.clickSelector}": "${tc.resultSelector}" appeared ✓`
             : `After clicking "${tc.clickSelector}": "${tc.resultSelector}" did not appear`
         };
+      }
+
+      case "fill_and_submit": {
+        // Fill all specified fields
+        for (const field of (tc.fields || [])) {
+          try {
+            await page.locator(field.selector).first().fill(String(field.value), { timeout: 5000 });
+          } catch (e) {
+            return { passed: false, actual: `Could not fill "${field.selector}": ${e.message.slice(0, 80)}` };
+          }
+        }
+        // Click submit button
+        if (tc.submitSelector) {
+          try {
+            await Promise.all([
+              page.waitForNavigation({ timeout: 8000, waitUntil: "domcontentloaded" }).catch(() => {}),
+              page.locator(tc.submitSelector).first().click({ timeout: 5000 })
+            ]);
+          } catch (_) {
+            await page.waitForTimeout(2000);
+          }
+        }
+        await page.waitForTimeout(2000);
+        // Verify success by selector
+        if (tc.successSelector) {
+          const vis = await page.locator(tc.successSelector).first().isVisible({ timeout: 6000 }).catch(() => false);
+          return {
+            passed: vis,
+            actual: vis
+              ? `Success — "${tc.successSelector}" appeared after submit`
+              : `Failed — "${tc.successSelector}" not found after submit`
+          };
+        }
+        // Verify success by URL
+        if (tc.successUrl) {
+          const url = page.url();
+          const ok  = url.includes(tc.successUrl);
+          return {
+            passed: ok,
+            actual: ok
+              ? `Redirected to ${url}`
+              : `Expected URL to contain "${tc.successUrl}", got "${url}"`
+          };
+        }
+        return { passed: true, actual: "Form filled and submitted" };
       }
 
       default:

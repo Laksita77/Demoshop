@@ -91,10 +91,21 @@ PREFERRED: Use Playwright check types (run against the LIVE rendered page):
    { "check": "title_contains", "value": "substring" }
 8. click_then_visible → click element, verify result appears
    { "check": "click_then_visible", "clickSelector": "CSS_sel", "resultSelector": "CSS_sel" }
+9. fill_and_submit → fill form fields with real values and submit (login/registration/checkout flows)
+   {
+     "check": "fill_and_submit",
+     "fields": [
+       { "selector": "input[name='email'], input[type='email']", "value": "test@example.com" },
+       { "selector": "input[name='password'], input[type='password']", "value": "Test@123" }
+     ],
+     "submitSelector": "button[type='submit'], input[type='submit']",
+     "successSelector": ".account-header, [class*='account']"
+   }
+   Use successSelector (element that appears on success) OR successUrl (URL path after redirect), not both.
 
 FALLBACK (only when there is no reliable CSS selector):
-9. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
-10. html_not_contains → { "check": "html_not_contains", "value": "string" }
+10. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
+11. html_not_contains → { "check": "html_not_contains", "value": "string" }
 
 CSS selector writing rules (critical for SPAs with obfuscated classes):
 - Text matching:   button:has-text('Sign In'), a:has-text('Login')

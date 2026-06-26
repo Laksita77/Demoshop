@@ -87,10 +87,21 @@ PLAYWRIGHT CHECKS (run against the live rendered page — preferred):
    { "check": "title_contains", "value": "substring" }
 8. click_then_visible → click an element, then verify something appears
    { "check": "click_then_visible", "clickSelector": "CSS_sel", "resultSelector": "CSS_sel" }
+9. fill_and_submit → fill form fields with real values and submit (for login/registration/checkout flows)
+   {
+     "check": "fill_and_submit",
+     "fields": [
+       { "selector": "input[name='email'], input[type='email']", "value": "test@example.com" },
+       { "selector": "input[name='password'], input[type='password']", "value": "Test@123" }
+     ],
+     "submitSelector": "button[type='submit'], input[type='submit']",
+     "successSelector": ".account-header, [class*='account'], [class*='dashboard']"
+   }
+   Use successSelector (element that appears on success) OR successUrl (URL path after redirect), not both.
 
 FALLBACK (only if no CSS selector can be reliably derived):
-9. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
-10. html_not_contains → { "check": "html_not_contains", "value": "string that must NOT appear" }
+10. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
+11. html_not_contains → { "check": "html_not_contains", "value": "string that must NOT appear" }
 
 CSS selector writing rules (critical for SPAs):
 - Text matching:   button:has-text('Sign In'), a:has-text('Login'), button:has-text('Add to Cart')
