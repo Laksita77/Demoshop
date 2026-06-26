@@ -304,6 +304,11 @@ function runCheck(html, tc) {
 // Uses Playwright when: (1) a live page is available AND (2) check is a Playwright type.
 // Falls back to HTML string checks automatically.
 async function executeCheck(page, html, tc) {
+  // Normalize: AI sometimes nests the check spec inside the "check" field
+  if (typeof tc.check === "object" && tc.check !== null) {
+    tc = { ...tc, ...tc.check, check: tc.check.check || tc.check.type || "visible" };
+  }
+
   if (page && PLAYWRIGHT_CHECKS.has(tc.check)) {
     return runPlaywrightCheck(page, tc);
   }
