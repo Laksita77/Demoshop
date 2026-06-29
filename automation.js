@@ -486,6 +486,24 @@ async function generateWithRetry(prompt, maxRetries = 4) {
     }
   }
 
+  // ── Claude fallback ──────────────────────────────────────────────────────────
+  if (process.env.CLAUDE_API_KEY) {
+    try {
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
+      console.log("   🟣 Gemini quota exhausted — falling back to Claude Haiku…");
+      const msg = await anthropic.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 8192,
+        messages: [{ role: "user", content: prompt }]
+      });
+      console.log("   🟣 Provider: Claude Haiku [fallback]");
+      return msg.content[0].text.trim()
+        .replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+    } catch (err) {
+      console.log(`   ❌ Claude fallback failed: ${err.message.slice(0, 100)}`);
+    }
+  }
   throw new Error("All Gemini models unavailable — quota exhausted or service down");
 }
 
