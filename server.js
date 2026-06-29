@@ -2,7 +2,7 @@ require("dotenv").config();
 const http               = require("http");
 const fs                 = require("fs");
 const path               = require("path");
-const { runAutomation, processApproval, declineApproval } = require("./automation");
+const { runAutomation, processApproval, declineApproval, getPendingApproval } = require("./automation");
 const { sendTestEmail } = require("./email");
 const { handleChat }     = require("./chat-agent");
 const { listSites, listSprints, listRuns } = require("./storage");
@@ -218,14 +218,12 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // ── 8. Tester approves bug → create Jira ticket ─────────────────────────────
-  if (req.method === "GET" && req.url.startsWith("/approve/")) {
-    const token = req.url.slice("/approve/".length).split("?")[0];
+  // ── 8a. Confirmation page for approve ────────────────────────────────────────
+  if (req.method === "GET" && req.url.startsWith("/approve/confirm/")) {
+    const token = req.url.slice("/approve/confirm/".length).split("?")[0];
     res.writeHead(200, { "Content-Type": "text/html" });
-
     processApproval(token)
       .then(({ jiraUrl, jiraKey, category, title, testCase }) => {
-        // Update dashboard live — add entry if server restarted and lost currentRun
         const idx = currentRun.tests.findIndex(t => t.id === testCase);
         if (idx >= 0) {
           Object.assign(currentRun.tests[idx], { jiraUrl, pendingApproval: false });
@@ -234,8 +232,7 @@ const server = http.createServer((req, res) => {
           currentRun.tests.push({ id: testCase, name: title, status: "fail", category, jiraUrl, pendingApproval: false });
         }
         broadcast(currentRun);
-        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8">
-<title>Bug Approved</title>
+        res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Bug Approved</title>
 <style>body{font-family:Arial,sans-serif;background:#f0fdf4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
 .card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
 h1{color:#2e7d32;margin:0 0 12px;}p{color:#444;font-size:15px;}
@@ -255,23 +252,19 @@ a{display:inline-block;margin-top:20px;background:#1A3C6E;color:#fff;text-decora
 <style>body{font-family:Arial,sans-serif;background:#fffbeb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
 .card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
 h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><body>
-<div class="card">
-  <div style="font-size:56px;">${alreadyDone ? "⚠️" : "❌"}</div>
-  <h1>${alreadyDone ? "Already Processed" : "Error"}</h1>
-  <p>${err.message}</p>
+<div class="card"><div style="font-size:56px;">${alreadyDone ? "⚠️" : "❌"}</div>
+<h1>${alreadyDone ? "Already Processed" : "Error"}</h1><p>${err.message}</p>
 </div></body></html>`);
       });
     return;
   }
 
-  // ── 9. Tester declines bug → no Jira ticket ──────────────────────────────────
-  if (req.method === "GET" && req.url.startsWith("/decline/")) {
-    const token = req.url.slice("/decline/".length).split("?")[0];
+  // ── 8b. Confirmation page for decline ────────────────────────────────────────
+  if (req.method === "GET" && req.url.startsWith("/decline/confirm/")) {
+    const token = req.url.slice("/decline/confirm/".length).split("?")[0];
     res.writeHead(200, { "Content-Type": "text/html" });
-
     try {
       const { category, title, testCase } = declineApproval(token);
-      // Update dashboard live — add entry if server restarted and lost currentRun
       const idx = currentRun.tests.findIndex(t => t.id === testCase);
       if (idx >= 0) {
         Object.assign(currentRun.tests[idx], { status: "declined", pendingApproval: false });
@@ -284,11 +277,9 @@ h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><b
 <style>body{font-family:Arial,sans-serif;background:#fef2f2;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
 .card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
 h1{color:#c62828;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><body>
-<div class="card">
-  <div style="font-size:56px;">❌</div>
-  <h1>Bug Declined</h1>
-  <p><strong>${title}</strong></p>
-  <p>No Jira ticket was created. The bug report has been dismissed (<em>${category}</em>).</p>
+<div class="card"><div style="font-size:56px;">🚫</div>
+<h1>Bug Declined</h1><p><strong>${title}</strong></p>
+<p>No Jira ticket was created. The bug report has been dismissed (<em>${category}</em>).</p>
 </div></body></html>`);
     } catch (err) {
       const alreadyDone = err.message.startsWith("Already");
@@ -296,12 +287,106 @@ h1{color:#c62828;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><b
 <style>body{font-family:Arial,sans-serif;background:#fffbeb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
 .card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
 h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><body>
-<div class="card">
-  <div style="font-size:56px;">${alreadyDone ? "⚠️" : "❌"}</div>
-  <h1>${alreadyDone ? "Already Processed" : "Error"}</h1>
-  <p>${err.message}</p>
+<div class="card"><div style="font-size:56px;">${alreadyDone ? "⚠️" : "❌"}</div>
+<h1>${alreadyDone ? "Already Processed" : "Error"}</h1><p>${err.message}</p>
 </div></body></html>`);
     }
+    return;
+  }
+
+  // ── 8. Approve → show confirmation page first ────────────────────────────────
+  if (req.method === "GET" && req.url.startsWith("/approve/")) {
+    const token = req.url.slice("/approve/".length).split("?")[0];
+    res.writeHead(200, { "Content-Type": "text/html" });
+    const approval = getPendingApproval(token);
+    if (!approval) {
+      res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Invalid</title></head><body><p>Invalid or expired token.</p></body></html>`);
+      return;
+    }
+    if (approval.status !== "pending") {
+      res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Already Processed</title>
+<style>body{font-family:Arial,sans-serif;background:#fffbeb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
+.card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
+h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><body>
+<div class="card"><div style="font-size:56px;">⚠️</div><h1>Already Processed</h1>
+<p>This bug report has already been ${approval.status}.</p></div></body></html>`);
+      return;
+    }
+    const { title, category } = approval.bugData;
+    const CATEGORY_STYLE = { Security:"#d32f2f", Backend:"#e65100", Frontend:"#f9a825", Performance:"#1565c0", Trivial:"#616161" };
+    const colour = CATEGORY_STYLE[category] || "#444";
+    res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Confirm Approval</title>
+<style>
+body{font-family:Arial,sans-serif;background:#f0fdf4;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
+.card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
+h1{color:#1a3c6e;margin:0 0 8px;font-size:20px;}
+.bug-title{font-size:15px;color:#1a1a1a;font-weight:bold;margin:12px 0 4px;}
+.cat{display:inline-block;padding:3px 12px;border-radius:4px;font-size:13px;font-weight:bold;color:${colour};border:1px solid ${colour};margin-bottom:16px;}
+.question{font-size:15px;color:#444;margin:16px 0 24px;}
+.btn-yes{display:inline-block;background:#2e7d32;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:bold;margin-right:12px;}
+.btn-no{display:inline-block;background:#c62828;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:bold;}
+</style></head><body>
+<div class="card">
+  <div style="font-size:48px;">🎫</div>
+  <h1>Confirm Bug Approval</h1>
+  <p class="bug-title">${title}</p>
+  <span class="cat">${category}</span>
+  <p class="question">Do you really want to create a Jira ticket for this bug?</p>
+  <a class="btn-yes" href="/approve/confirm/${token}">✅ Yes, Create Ticket</a>
+  <a class="btn-no" href="/cancel">❌ No, Cancel</a>
+</div></body></html>`);
+    return;
+  }
+
+  // ── 9. Decline → show confirmation page first ─────────────────────────────────
+  if (req.method === "GET" && req.url.startsWith("/decline/")) {
+    const token = req.url.slice("/decline/".length).split("?")[0];
+    res.writeHead(200, { "Content-Type": "text/html" });
+    const approval = getPendingApproval(token);
+    if (!approval) {
+      res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Invalid</title></head><body><p>Invalid or expired token.</p></body></html>`);
+      return;
+    }
+    if (approval.status !== "pending") {
+      res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Already Processed</title>
+<style>body{font-family:Arial,sans-serif;background:#fffbeb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
+.card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
+h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><body>
+<div class="card"><div style="font-size:56px;">⚠️</div><h1>Already Processed</h1>
+<p>This bug report has already been ${approval.status}.</p></div></body></html>`);
+      return;
+    }
+    const { title, category } = approval.bugData;
+    res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Confirm Decline</title>
+<style>
+body{font-family:Arial,sans-serif;background:#fef2f2;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
+.card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
+h1{color:#c62828;margin:0 0 8px;font-size:20px;}
+.bug-title{font-size:15px;color:#1a1a1a;font-weight:bold;margin:12px 0 16px;}
+.question{font-size:15px;color:#444;margin:0 0 24px;}
+.btn-yes{display:inline-block;background:#c62828;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:bold;margin-right:12px;}
+.btn-no{display:inline-block;background:#2e7d32;color:#fff;text-decoration:none;padding:12px 32px;border-radius:6px;font-size:15px;font-weight:bold;}
+</style></head><body>
+<div class="card">
+  <div style="font-size:48px;">🚫</div>
+  <h1>Confirm Decline</h1>
+  <p class="bug-title">${title}</p>
+  <p class="question">Do you really want to decline this bug? No Jira ticket will be created.</p>
+  <a class="btn-yes" href="/decline/confirm/${token}">✅ Yes, Decline</a>
+  <a class="btn-no" href="/cancel">❌ No, Go Back</a>
+</div></body></html>`);
+    return;
+  }
+
+  // ── Cancel ────────────────────────────────────────────────────────────────────
+  if (req.method === "GET" && req.url === "/cancel") {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end(`<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Cancelled</title>
+<style>body{font-family:Arial,sans-serif;background:#fffbeb;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;}
+.card{background:#fff;border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,.1);padding:40px 48px;max-width:480px;text-align:center;}
+h1{color:#b45309;margin:0 0 12px;}p{color:#444;font-size:15px;}</style></head><body>
+<div class="card"><div style="font-size:56px;">↩️</div><h1>Action Cancelled</h1>
+<p>No changes were made. You can close this tab.</p></div></body></html>`);
     return;
   }
 

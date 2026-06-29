@@ -837,4 +837,4 @@ function declineApproval(token) {
   return { category: approval.bugData.category, title: approval.bugData.title, testCase: approval.bugData.testCase };
 }
 
-module.exports = { runAutomation, runBatchAutomation, processApproval, declineApproval };
+module.exports = { runAutomation, runBatchAutomation, processApproval, declineApproval, getPendingApproval };
