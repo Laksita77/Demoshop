@@ -516,42 +516,46 @@ async function runBatchAutomation(failures, onResult = null) {
   console.log(`\n🤖 Sending ${failures.length} failure(s) to Gemini for batch classification…\n`);
 
   const prompt = `
-You are a senior QA engineer. Classify ALL of these failing test cases in ONE response.
+You are a senior QA engineer classifying failing test cases by the TYPE OF BUG, not by keywords in the test name.
 
-STEP 1 — CHECK TEST NAME FIRST (these rules are ABSOLUTE, ignore the actual error):
-- If test name contains any of: "SQL injection", "XSS", "CSRF", "injection", "auth bypass", "security vulnerability", "data exposure" → SECURITY
-- If test name contains any of: "login", "logout", "password", "authentication", "credentials", "sign in", "sign up", "register", "redirect" → BACKEND
-- If test name contains any of: "load time", "timeout", "performance", "slow", "response time" → PERFORMANCE
+For each failure, reason about: "Which layer of the application caused this failure?"
 
-STEP 2 — IF no keyword matched in Step 1, use the Actual error:
-- "URL does not contain" or "redirected to /login" → Backend
-- "connection timeout" or "ENETUNREACH" or "slow" → Performance
-- "UI check failed" or "not found" or "not visible" or "selector not found" → Frontend
-- "could not fill field" → Frontend
+CATEGORIES (pick based on what actually broke, not what the test is named):
+- Frontend    → The browser/UI layer failed. Element not rendered, wrong CSS, missing component, broken layout, wrong text displayed, image not loading. The issue lives in HTML/CSS/JS on the client side.
+- Backend     → The server/API layer failed. Wrong redirect, auth not enforced, API returned wrong data, form submission not processed, database not updated, server-side validation missing.
+- Security    → A security control failed. SQL injection not blocked, XSS not sanitised, unauthenticated access allowed, sensitive data exposed, CSRF not protected, password stored in plain text.
+- Performance → Speed/reliability failed. Page load timeout, connection refused, server too slow (>3s), network error (ENETUNREACH), service unavailable.
+- Trivial     → Non-critical cosmetic issue. Wrong capitalisation, minor text mismatch, extra whitespace, non-breaking visual difference.
 
-Categories:
-- Security    → SQL injection, XSS, auth bypass, credentials exposed
-- Backend     → login/auth failure, redirect broken, API/server-side logic broken
-- Frontend    → UI element missing, not rendered, CSS broken, element not visible
-- Performance → connection timeout, slow load (>5s)
-- Trivial     → minor cosmetic text mismatch
+HOW TO CLASSIFY:
+1. Read the "Expected" — what should have happened?
+2. Read the "Actual error" — what went wrong?
+3. Ask: is this a rendering problem (Frontend), a server/logic problem (Backend), a security hole (Security), a speed problem (Performance), or cosmetic (Trivial)?
+4. The test name is context only — classify based on the nature of the failure, not the name.
+
+EXAMPLES:
+- Expected: "Password field has type=password", Actual: "UI check failed: field not found" → Frontend (UI element missing)
+- Expected: "Invalid login shows error", Actual: "Redirected to dashboard" → Backend (server accepted bad credentials)
+- Expected: "SQL injection blocked", Actual: "Login succeeded with ' OR 1=1" → Security (injection not blocked)
+- Expected: "Page loads in 2s", Actual: "Connection timeout after 5s" → Performance
+- Expected: "Button label is Submit", Actual: "Button label is submit" → Trivial
 
 Test cases to classify:
 ${failures.map((f, i) => `
 [${i + 1}] ID: ${f.id}
     Test name    : ${f.title}
-    Actual error : ${f.errorValue}
     Expected     : ${f.expected}
+    Actual error : ${f.errorValue}
 `).join("")}
 
-Reply ONLY with a valid JSON object containing a "results" array:
+Reply ONLY with a valid JSON object:
 {
   "results": [
     {
       "id": "TC-XX",
       "category": "Security|Backend|Frontend|Performance|Trivial",
-      "classificationReason": "One sentence based on the actual error, not the test name",
-      "brokenCode": "One sentence describing what technically broke",
+      "classificationReason": "One sentence explaining which layer broke and why",
+      "brokenCode": "One sentence describing what technically needs fixing",
       "fixes": ["Fix 1", "Fix 2", "Fix 3"],
       "emailBody": "Professional 2-sentence summary for the dev team"
     }
