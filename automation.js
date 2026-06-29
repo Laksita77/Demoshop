@@ -518,31 +518,30 @@ async function runBatchAutomation(failures, onResult = null) {
   const prompt = `
 You are a senior QA engineer. Classify ALL of these failing test cases in ONE response.
 
-IMPORTANT: Use the "Actual" error as the primary signal. Use the "Test name" as a secondary hint ONLY when the error is ambiguous.
+STEP 1 — CHECK TEST NAME FIRST (these rules are ABSOLUTE, ignore the actual error):
+- If test name contains any of: "SQL injection", "XSS", "CSRF", "injection", "auth bypass", "security vulnerability", "data exposure" → SECURITY
+- If test name contains any of: "login", "logout", "password", "authentication", "credentials", "sign in", "sign up", "register", "redirect" → BACKEND
+- If test name contains any of: "load time", "timeout", "performance", "slow", "response time" → PERFORMANCE
 
-OVERRIDES — apply these first before anything else:
-1. SECURITY: test name mentions SQL injection, XSS, CSRF, injection attack, auth bypass, security vulnerability, data exposure → Security
-2. BACKEND: test name mentions login, authentication, credentials, password, sign in, sign up, register, redirect → Backend
+STEP 2 — IF no keyword matched in Step 1, use the Actual error:
+- "URL does not contain" or "redirected to /login" → Backend
+- "connection timeout" or "ENETUNREACH" or "slow" → Performance
+- "UI check failed" or "not found" or "not visible" or "selector not found" → Frontend
+- "could not fill field" → Frontend
 
 Categories:
-- Security    → SQL injection not blocked, XSS not sanitized, auth bypass, credentials/tokens exposed, sensitive data leaked
-- Backend     → login/auth failure, redirect to wrong URL, API returned wrong data, server-side logic broken
-- Frontend    → UI element missing/not rendered, non-auth form field absent, CSS layout broken, element not visible
-- Performance → connection timeout, page load timeout, slow response (>5s)
-- Trivial     → minor cosmetic difference, non-critical text mismatch
-
-Classification rules based on Actual error (used only if no override applies):
-- "not found after submit" or "element not found" or "not visible" → Frontend
-- "could not fill field" or "selector not found" → Frontend
-- "URL does not contain" or "redirected to /login" → Backend
-- "connection timeout" or "ENETUNREACH" → Performance
+- Security    → SQL injection, XSS, auth bypass, credentials exposed
+- Backend     → login/auth failure, redirect broken, API/server-side logic broken
+- Frontend    → UI element missing, not rendered, CSS broken, element not visible
+- Performance → connection timeout, slow load (>5s)
+- Trivial     → minor cosmetic text mismatch
 
 Test cases to classify:
 ${failures.map((f, i) => `
 [${i + 1}] ID: ${f.id}
+    Test name    : ${f.title}
     Actual error : ${f.errorValue}
     Expected     : ${f.expected}
-    Test name    : ${f.title}
 `).join("")}
 
 Reply ONLY with a valid JSON object containing a "results" array:
