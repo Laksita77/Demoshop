@@ -232,6 +232,17 @@
       font-size:1rem; font-weight:700; }
 
     footer { text-align:center; padding:16px; color:var(--dim); font-size:.7rem; border-top:1px solid var(--border); margin-top:20px; background:var(--card); }
+
+    /* ── Fail Reason Modal ── */
+    .fail-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.38); z-index:999; align-items:center; justify-content:center; }
+    .fail-overlay.open { display:flex; }
+    .fail-modal { background:var(--card); border:1px solid var(--border2); border-radius:10px; padding:22px 24px; max-width:540px; width:92%; box-shadow:0 10px 40px rgba(0,0,0,.2); position:relative; }
+    .fail-modal-title { font-size:.88rem; font-weight:700; color:var(--red); margin-bottom:12px; display:flex; align-items:center; gap:7px; }
+    .fail-modal-body { font-size:.82rem; color:var(--text); line-height:1.7; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 14px; word-break:break-word; white-space:pre-wrap; max-height:300px; overflow-y:auto; }
+    .fail-modal-close { position:absolute; top:11px; right:13px; background:none; border:none; cursor:pointer; color:var(--dim); font-size:1.1rem; line-height:1; padding:2px 5px; border-radius:4px; }
+    .fail-modal-close:hover { background:var(--surface); color:var(--text); }
+    .fail-link { cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
+    .fail-link:hover { opacity:.8; }
   </style>
 </head>
 <body>
@@ -343,6 +354,15 @@
 <footer>QA AI Pipeline &nbsp;·&nbsp; Gemini AI &nbsp;·&nbsp; Sprint Health &nbsp;·&nbsp; WCAG Accessibility &nbsp;·&nbsp; Jira Integration</footer>
 </div><!-- wrap -->
 
+<!-- ── Fail Reason Modal ── -->
+<div class="fail-overlay" id="failOverlay" onclick="if(event.target===this)closeFailModal()">
+  <div class="fail-modal">
+    <button class="fail-modal-close" onclick="closeFailModal()">✕</button>
+    <div class="fail-modal-title">❌ Failure Reason</div>
+    <div class="fail-modal-body" id="failModalBody"></div>
+  </div>
+</div>
+
 <script>
 const CAT_CLASS = { Security:"cat-security", Backend:"cat-backend", Frontend:"cat-frontend", Performance:"cat-performance", Trivial:"cat-trivial", Accessibility:"cat-accessibility" };
 const CAT_EMOJI = { Security:"🔴", Backend:"🟠", Frontend:"🟡", Performance:"🔵", Trivial:"⚪", Accessibility:"♿" };
@@ -357,6 +377,18 @@ const STATUS_HTML = {
   duplicate:   `<span class="status s-duplicate">🔁 Duplicate</span>`,
   declined:    `<span class="status s-declined">🚫 Declined</span>`
 };
+
+// ── Fail reason modal ─────────────────────────────────────────
+let failReasons = {};
+function showFailReason(id) {
+  const text = failReasons[id] || "No details available.";
+  document.getElementById("failModalBody").textContent = text;
+  document.getElementById("failOverlay").classList.add("open");
+}
+function closeFailModal() {
+  document.getElementById("failOverlay").classList.remove("open");
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeFailModal(); });
 
 /* ── Live Run ────────────────────────────────────────────── */
 function render(run) {
@@ -392,6 +424,7 @@ function render(run) {
   document.getElementById("runMeta").textContent = run.started?`Started: ${new Date(run.started).toLocaleTimeString()}`:"";
 
   if (!tests.length) return;
+  failReasons = {};
   const rows = tests.map(t=>{
     const catClass = t.category?(CAT_CLASS[t.category]||""):"";
     const catEmoji = t.category?(CAT_EMOJI[t.category]||""):"";
@@ -409,10 +442,23 @@ function render(run) {
         : t.pendingApproval
           ? `<span style="color:#f9a825;font-size:.74rem;font-weight:600;">⏳ Awaiting Approval</span>`
           : `<span class="dash">—</span>`;
+
+    // Build clickable badge for fail/error when actual reason is available
+    let statusCell;
+    if ((t.status === "fail" || t.status === "error") && t.actual) {
+      failReasons[t.id] = t.actual;
+      const cls = t.status === "fail" ? "s-fail" : "s-error";
+      const ico = t.status === "fail" ? "❌" : "💥";
+      const lbl = t.status === "fail" ? "Fail" : "Error";
+      statusCell = `<span class="status ${cls} fail-link" onclick="showFailReason(${JSON.stringify(t.id)})" title="Click to see full reason">${ico} ${lbl}</span>`;
+    } else {
+      statusCell = STATUS_HTML[t.status] || STATUS_HTML.pending;
+    }
+
     return `<tr>
       <td><span class="tc-id">${t.id||"—"}</span></td>
       <td><div class="tc-name">${t.name||""}</div>${t.actual?`<div class="tc-sub">${t.actual}</div>`:""}</td>
-      <td>${STATUS_HTML[t.status]||STATUS_HTML.pending}</td>
+      <td>${statusCell}</td>
       <td>${t.category?`<span class="cat ${catClass}">${catEmoji} ${t.category}</span>`:`<span class="dash">—</span>`}</td>
       <td>${jiraCell}</td>
     </tr>`;
