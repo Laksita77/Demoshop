@@ -103,9 +103,26 @@ PREFERRED: Use Playwright check types (run against the LIVE rendered page):
    }
    Use successSelector (element that appears on success) OR successUrl (URL path after redirect), not both.
 
+API CHECKS (use when the story requires validating a REST endpoint directly):
+10. api_request → make an HTTP request and verify status code, response body, and speed
+   {
+     "check": "api_request",
+     "method": "GET",
+     "url": "https://example.com/api/products",
+     "expectedStatus": 200,
+     "expectedBodyContains": "products",
+     "expectedBodyNotContains": "error",
+     "maxResponseTime": 3000
+   }
+   Fields: method (GET/POST/PUT/DELETE), url (required), headers (optional object),
+   body (optional object for POST/PUT), expectedStatus (default 200),
+   expectedBodyContains (optional string), expectedBodyNotContains (optional string),
+   maxResponseTime in ms (default 5000).
+   Use this for: REST API endpoints, JSON APIs, status-code checks, response content validation.
+
 FALLBACK (only when there is no reliable CSS selector):
-10. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
-11. html_not_contains → { "check": "html_not_contains", "value": "string" }
+11. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
+12. html_not_contains → { "check": "html_not_contains", "value": "string" }
 
 CSS selector writing rules (critical for SPAs with obfuscated classes):
 - Text matching:   button:has-text('Sign In'), a:has-text('Login')

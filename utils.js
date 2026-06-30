@@ -307,6 +307,62 @@ function runCheck(html, tc) {
   }
 }
 
+// ── API request check — no browser needed, hits endpoints directly ───────────
+async function runApiCheck(tc) {
+  const method          = (tc.method || "GET").toUpperCase();
+  const url             = tc.url;
+  const expectedStatus  = tc.expectedStatus  ?? 200;
+  const maxResponseTime = tc.maxResponseTime ?? 5000;
+
+  if (!url) return { passed: false, actual: "api_request check missing 'url' field" };
+
+  const start      = Date.now();
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), maxResponseTime);
+
+  try {
+    const fetchOpts = {
+      method,
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", "User-Agent": "QA-Pipeline/1.0", ...(tc.headers || {}) }
+    };
+    if (tc.body && method !== "GET") fetchOpts.body = JSON.stringify(tc.body);
+
+    const response     = await fetch(url, fetchOpts);
+    clearTimeout(timer);
+    const responseTime = Date.now() - start;
+    const statusCode   = response.status;
+    let   responseText = "";
+    try { responseText = await response.text(); } catch (_) {}
+
+    // Response time check
+    if (responseTime > maxResponseTime) {
+      return { passed: false, actual: `Response took ${responseTime}ms — limit is ${maxResponseTime}ms` };
+    }
+    // Status code check
+    if (statusCode !== expectedStatus) {
+      return { passed: false, actual: `Expected status ${expectedStatus}, got ${statusCode} in ${responseTime}ms — body: ${responseText.slice(0, 120)}` };
+    }
+    // Body contains check
+    if (tc.expectedBodyContains && !responseText.includes(tc.expectedBodyContains)) {
+      return { passed: false, actual: `Status ${statusCode} OK but body missing "${tc.expectedBodyContains}" — got: ${responseText.slice(0, 150)}` };
+    }
+    // Body NOT contains check
+    if (tc.expectedBodyNotContains && responseText.includes(tc.expectedBodyNotContains)) {
+      return { passed: false, actual: `Body contains "${tc.expectedBodyNotContains}" when it should not` };
+    }
+
+    return { passed: true, actual: `${method} ${url} → ${statusCode} in ${responseTime}ms` };
+
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === "AbortError") {
+      return { passed: false, actual: `Request timeout — no response within ${maxResponseTime}ms` };
+    }
+    return { passed: false, actual: `Request failed: ${err.message.slice(0, 120)}` };
+  }
+}
+
 // ── Unified check runner ──────────────────────────────────────────────────────
 // Uses Playwright when: (1) a live page is available AND (2) check is a Playwright type.
 // Falls back to HTML string checks automatically.
@@ -314,6 +370,11 @@ async function executeCheck(page, html, tc) {
   // Normalize: AI sometimes nests the check spec inside the "check" field
   if (typeof tc.check === "object" && tc.check !== null) {
     tc = { ...tc, ...tc.check, check: tc.check.check || tc.check.type || "visible" };
+  }
+
+  // API check — runs independently, no browser or HTML needed
+  if (tc.check === "api_request") {
+    return runApiCheck(tc);
   }
 
   if (page && PLAYWRIGHT_CHECKS.has(tc.check)) {
@@ -334,6 +395,7 @@ module.exports = {
   stripHtml,
   runCheck,
   runPlaywrightCheck,
+  runApiCheck,
   executeCheck,
   PLAYWRIGHT_CHECKS
 };
