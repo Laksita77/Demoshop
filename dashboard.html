@@ -457,7 +457,7 @@ function render(run) {
 
     return `<tr>
       <td><span class="tc-id">${t.id||"—"}</span></td>
-      <td><div class="tc-name">${t.name||""}</div>${t.actual?`<div class="tc-sub">${t.actual}</div>`:""}</td>
+      <td><div class="tc-name">${t.name||""}</div></td>
       <td>${statusCell}</td>
       <td>${t.category?`<span class="cat ${catClass}">${catEmoji} ${t.category}</span>`:`<span class="dash">—</span>`}</td>
       <td>${jiraCell}</td>
