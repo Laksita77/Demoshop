@@ -6,25 +6,29 @@ const os        = require("os");
 
 // ── Known site shortcuts ──────────────────────────────────────────────────────
 const KNOWN_SITES = {
-  flipkart:  "https://www.flipkart.com",
-  amazon:    "https://www.amazon.in",
-  myntra:    "https://www.myntra.com",
-  meesho:    "https://www.meesho.com",
-  nykaa:     "https://www.nykaa.com",
-  snapdeal:  "https://www.snapdeal.com",
-  ajio:      "https://www.ajio.com",
-  swiggy:    "https://www.swiggy.com",
-  zomato:    "https://www.zomato.com",
-  bigbasket: "https://www.bigbasket.com"
+  flipkart:    "https://www.flipkart.com",
+  amazon:      "https://www.amazon.in",
+  myntra:      "https://www.myntra.com",
+  meesho:      "https://www.meesho.com",
+  nykaa:       "https://www.nykaa.com",
+  snapdeal:    "https://www.snapdeal.com",
+  ajio:        "https://www.ajio.com",
+  swiggy:      "https://www.swiggy.com",
+  zomato:      "https://www.zomato.com",
+  bigbasket:   "https://www.bigbasket.com",
+  saucedemo:   "https://www.saucedemo.com",
+  automation:  "https://automationexercise.com",
+  demoblaze:   "https://www.demoblaze.com",
+  demoqa:      "https://demoqa.com"
 };
 
 // ── Parse user intent locally (no API quota needed) ───────────────────────────
 function parseIntent(message) {
   const msg = message.toLowerCase().trim();
 
-  // 1. Extract URL
+  // 1. Extract URL — strip trailing punctuation that gets accidentally included
   const urlMatch = message.match(/https?:\/\/[^\s]+/i);
-  let url = urlMatch ? urlMatch[0] : null;
+  let url = urlMatch ? urlMatch[0].replace(/[,.)>\]'"}\s]+$/, "") : null;
 
   // 2. Detect domain names like "flipkart.com"
   if (!url) {
