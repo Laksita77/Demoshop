@@ -358,7 +358,7 @@
 <div class="fail-overlay" id="failOverlay" onclick="if(event.target===this)closeFailModal()">
   <div class="fail-modal">
     <button class="fail-modal-close" onclick="closeFailModal()">✕</button>
-    <div class="fail-modal-title">❌ Failure Reason</div>
+    <div class="fail-modal-title" id="failModalTitle">❌ Failure Reason</div>
     <div class="fail-modal-body" id="failModalBody"></div>
   </div>
 </div>
@@ -381,8 +381,9 @@ const STATUS_HTML = {
 // ── Fail reason modal ─────────────────────────────────────────
 let failReasons = {};
 function showFailReason(id) {
-  const text = failReasons[id] || "No details available.";
-  document.getElementById("failModalBody").textContent = text;
+  const entry = failReasons[id] || { name: id, actual: "No details available." };
+  document.getElementById("failModalTitle").textContent = `❌  ${entry.name}`;
+  document.getElementById("failModalBody").textContent  = entry.actual;
   document.getElementById("failOverlay").classList.add("open");
 }
 function closeFailModal() {
@@ -446,11 +447,11 @@ function render(run) {
     // Build clickable badge for fail/error when actual reason is available
     let statusCell;
     if ((t.status === "fail" || t.status === "error") && t.actual) {
-      failReasons[t.id] = t.actual;
+      failReasons[t.id] = { name: t.name || t.id, actual: t.actual };
       const cls = t.status === "fail" ? "s-fail" : "s-error";
       const ico = t.status === "fail" ? "❌" : "💥";
       const lbl = t.status === "fail" ? "Fail" : "Error";
-      statusCell = `<span class="status ${cls} fail-link" onclick="showFailReason(${JSON.stringify(t.id)})" title="Click to see full reason">${ico} ${lbl}</span>`;
+      statusCell = `<span class="status ${cls} fail-link" onclick="showFailReason('${t.id}')" title="Click to see full reason">${ico} ${lbl}</span>`;
     } else {
       statusCell = STATUS_HTML[t.status] || STATUS_HTML.pending;
     }
@@ -465,7 +466,7 @@ function render(run) {
   }).join("");
   document.getElementById("tableBody").innerHTML = `
     <table><thead><tr>
-      <th width="80">ID</th><th>Test Name / Actual</th>
+      <th width="80">ID</th><th>Test Name</th>
       <th width="180">Status</th><th width="160">AI Category</th><th width="140">Jira</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
