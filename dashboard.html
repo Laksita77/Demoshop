@@ -197,6 +197,33 @@
     .suites-empty   { text-align:center; padding:40px; color:var(--dim); font-size:.83rem; }
     .suites-loading { text-align:center; padding:30px; color:var(--muted); font-size:.8rem; }
 
+    /* ── Manual Tests tab ── */
+    .manual-wrap  { margin:22px 28px 28px; display:flex; flex-direction:column; gap:14px; }
+    .manual-card  { background:var(--card); border:1px solid var(--border); border-radius:8px; overflow:hidden; box-shadow:0 1px 4px rgba(0,0,0,.05); }
+    .manual-card-header { padding:12px 18px; background:var(--surface); border-bottom:1px solid var(--border); font-size:.83rem; font-weight:600; color:var(--text); }
+    .manual-card-body   { padding:16px 18px; display:flex; flex-direction:column; gap:12px; }
+    .manual-label { font-size:.72rem; font-weight:600; color:var(--dim); text-transform:uppercase; letter-spacing:.5px; margin-bottom:4px; }
+    .manual-input { width:100%; background:var(--bg); border:1px solid var(--border2); border-radius:6px; color:var(--text);
+      padding:8px 11px; font-size:.82rem; outline:none; font-family:inherit; transition:border-color .15s; }
+    .manual-input:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(74,111,165,.1); }
+    .manual-textarea { width:100%; background:var(--bg); border:1px solid var(--border2); border-radius:6px; color:var(--text);
+      padding:10px 12px; font-size:.81rem; outline:none; font-family:inherit; resize:vertical; min-height:160px;
+      line-height:1.6; transition:border-color .15s; }
+    .manual-textarea:focus { border-color:var(--blue); box-shadow:0 0 0 3px rgba(74,111,165,.1); }
+    .manual-textarea::placeholder { color:var(--dim); }
+    .manual-row { display:flex; gap:10px; align-items:flex-end; flex-wrap:wrap; }
+    .manual-row .manual-field { flex:1; min-width:180px; }
+    .manual-run-btn { background:var(--blue); color:#fff; border:none; border-radius:7px;
+      padding:9px 22px; font-size:.82rem; font-weight:600; cursor:pointer; white-space:nowrap;
+      transition:opacity .15s; height:38px; align-self:flex-end; }
+    .manual-run-btn:hover    { opacity:.85; }
+    .manual-run-btn:disabled { background:var(--surface); color:var(--dim); cursor:not-allowed; opacity:1; border:1px solid var(--border); }
+    .manual-hint { font-size:.71rem; color:var(--dim); line-height:1.55; }
+    .manual-hint code { background:var(--surface); border:1px solid var(--border); border-radius:3px; padding:1px 5px; font-size:.7rem; }
+    .manual-log  { background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:10px 13px;
+      font-family:'JetBrains Mono',monospace; font-size:.72rem; color:var(--muted); min-height:60px;
+      max-height:220px; overflow-y:auto; white-space:pre-wrap; word-break:break-word; display:none; }
+
     /* ── Sprint Health ── */
     .sh-outer { display:flex; align-items:center; justify-content:center; min-height:400px; padding:32px; }
     .sh-card {
@@ -293,6 +320,7 @@
 <!-- ── Tabs ── -->
 <div class="tabs">
   <button class="tab-btn active" onclick="switchTab('live',this)">🔴 Live Run</button>
+  <button class="tab-btn"        onclick="switchTab('manual',this)">✏️ Manual Tests</button>
   <button class="tab-btn"        onclick="switchTab('suites',this)">📁 Test Suites</button>
   <button class="tab-btn"        onclick="switchTab('health',this)">📈 Sprint Health</button>
 </div>
@@ -323,6 +351,61 @@
         <p style="margin-top:10px;font-size:.8rem">
           <code>node generate-tests.js --url https://site.com</code>
         </p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════ MANUAL TESTS ══════════════ -->
+<div id="tab-manual" class="tab-panel">
+  <div class="manual-wrap">
+    <div class="manual-card">
+      <div class="manual-card-header">✏️ Manual Test Runner — write your own test cases</div>
+      <div class="manual-card-body">
+
+        <div class="manual-row">
+          <div class="manual-field">
+            <div class="manual-label">Website URL</div>
+            <input id="manualUrl" class="manual-input" type="url"
+              placeholder="https://www.saucedemo.com" />
+          </div>
+          <div class="manual-field" style="max-width:200px">
+            <div class="manual-label">Sprint Name (optional)</div>
+            <input id="manualSprint" class="manual-input" type="text"
+              placeholder="Sprint-01" />
+          </div>
+        </div>
+
+        <div>
+          <div class="manual-label">Test Cases — one per line</div>
+          <textarea id="manualTests" class="manual-textarea"
+            placeholder="Verify login page loads under 3 seconds
+Check password input has type password
+Verify login with standard_user / secret_sauce shows products page
+Verify login with locked_out_user shows an error message
+Check logo is visible in the header
+Verify cart icon is present in the header
+Check page title contains Swag Labs
+Verify SQL injection in username field is blocked
+Test that /inventory.html without login redirects away
+Check product images are visible after login"></textarea>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <button class="manual-run-btn" id="manualRunBtn" onclick="runManualTests()">▶ Run Tests</button>
+          <button class="manual-run-btn" style="background:var(--surface);color:var(--muted);border:1px solid var(--border)" onclick="clearManualLog()">Clear</button>
+          <span class="manual-hint">Results appear live in the <strong>🔴 Live Run</strong> tab</span>
+        </div>
+
+        <div class="manual-hint">
+          <strong>Tips:</strong> one test description per line &nbsp;·&nbsp;
+          be specific: <code>verify password field has type=password</code> &nbsp;·&nbsp;
+          include actions: <code>login with standard_user / secret_sauce and check products page appears</code> &nbsp;·&nbsp;
+          security: <code>SQL injection in login username should be blocked</code>
+        </div>
+
+        <div id="manualLog" class="manual-log"></div>
+
       </div>
     </div>
   </div>
@@ -639,6 +722,66 @@ async function sendChat() {
     }
   } catch(err) { removeTyping(); addMsg("agent",`⚠️ ${err.message}`,"error"); }
   setInputState(false); document.getElementById("chatInput").focus();
+}
+
+/* ── Manual Tests tab ───────────────────────────────────────── */
+function clearManualLog() {
+  const log = document.getElementById("manualLog");
+  log.textContent = "";
+  log.style.display = "none";
+}
+
+async function runManualTests() {
+  const urlEl     = document.getElementById("manualUrl");
+  const testsEl   = document.getElementById("manualTests");
+  const sprintEl  = document.getElementById("manualSprint");
+  const logEl     = document.getElementById("manualLog");
+  const btn       = document.getElementById("manualRunBtn");
+
+  const url    = urlEl.value.trim();
+  const sprint = sprintEl.value.trim();
+  const raw    = testsEl.value.trim();
+  if (!raw) { alert("Please enter at least one test case."); return; }
+
+  // Build the message the chat agent expects
+  const lines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 2);
+  let msg = `manual: ${lines.join(", ")}`;
+  if (url)    msg += ` on ${url}`;
+  if (sprint) msg += ` sprint ${sprint}`;
+
+  // Show log panel, switch to Live Run so results are visible
+  logEl.style.display = "block";
+  logEl.textContent   = "";
+  btn.disabled        = true;
+  btn.textContent     = "⏳ Running…";
+
+  switchTab("live", document.querySelectorAll(".tab-btn")[0]);
+
+  try {
+    const resp   = await fetch("/chat", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ message: msg }) });
+    const reader = resp.body.getReader();
+    const dec    = new TextDecoder();
+    let   buf    = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines2 = buf.split("\n"); buf = lines2.pop();
+      for (const line of lines2) {
+        if (!line.startsWith("data: ")) continue;
+        let chunk; try { chunk = JSON.parse(line.slice(6)); } catch { continue; }
+        if (chunk.type === "log")     { logEl.textContent += chunk.text; logEl.scrollTop = logEl.scrollHeight; }
+        if (chunk.type === "success") { logEl.textContent += "\n✅ " + chunk.text + "\n"; }
+        if (chunk.type === "error")   { logEl.textContent += "\n⚠️ "  + chunk.text + "\n"; }
+        if (chunk.type === "done")    { btn.disabled = false; btn.textContent = "▶ Run Tests"; }
+      }
+    }
+  } catch (err) {
+    logEl.textContent += `\n⚠️ ${err.message}`;
+    btn.disabled = false;
+    btn.textContent = "▶ Run Tests";
+  }
 }
 
 /* ── Rerun ────────────────────────────────────────────────── */
