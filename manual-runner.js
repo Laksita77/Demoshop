@@ -1,23 +1,7 @@
 require("dotenv").config();
-const { GoogleGenerativeAI } = require("@google/generative-ai");
-
-const genAI  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const genAI2 = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY);
-const geminiModels = [
-  // Key 1
-  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),        name: "Gemini 2.5 Flash [K1]"      },
-  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),   name: "Gemini 2.5 Flash Lite [K1]" },
-  { model: genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" }),name: "Gemini Flash Lite [K1]"     },
-  { model: genAI.getGenerativeModel({ model: "gemini-2.0-flash" }),        name: "Gemini 2.0 Flash [K1]"      },
-  // Key 2 (separate quota)
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash" }),       name: "Gemini 2.5 Flash [K2]"      },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),  name: "Gemini 2.5 Flash Lite [K2]" },
-  { model: genAI2.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K2]"     },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.0-flash" }),       name: "Gemini 2.0 Flash [K2]"      },
-];
-
+const { generateJsonWithFallback } = require("./ai-provider");
 const { runBatchAutomation } = require("./automation");
-const { getPageAndHtml, stripHtml, executeCheck } = require("./utils");
+const { getPageAndHtml, stripHtml, executeCheck, captureFailureScreenshot } = require("./utils");
 const { saveTestCases, saveRunResult }  = require("./storage");
 
 const RUN_ID = `manual-run-${Date.now()}`;
@@ -70,6 +54,11 @@ ${userTests.map((t, i) => `${i + 1}. ${t}`).join("\n")}
 
 Use EXACTLY one check type per test. PREFER Playwright checks over HTML checks.
 
+PASS/FAIL MIXING RULE:
+- Convert the user's descriptions faithfully, but when a description implies both valid and invalid data, generate a realistic mix of positive and negative checks.
+- Do NOT invent impossible failures just to force failed results.
+- If the user's descriptions clearly support only passing checks or only failing checks, then same-kind results are allowed.
+
 PLAYWRIGHT CHECKS (run against the live rendered page — preferred):
 1. visible         → element is visible in the browser
    { "check": "visible", "selector": "CSS_selector" }
@@ -91,13 +80,14 @@ PLAYWRIGHT CHECKS (run against the live rendered page — preferred):
    {
      "check": "fill_and_submit",
      "fields": [
-       { "selector": "input[name='email'], input[type='email']", "value": "test@example.com" },
+       { "selector": "input[name='email'], input[type='email']", "value": "test+{{timestamp}}@example.com" },
        { "selector": "input[name='password'], input[type='password']", "value": "Test@123" }
      ],
      "submitSelector": "button[type='submit'], input[type='submit']",
-     "successSelector": ".account-header, [class*='account'], [class*='dashboard']"
+     "successUrl": "registerresult"
    }
-   Use successSelector (element that appears on success) OR successUrl (URL path after redirect), not both.
+   IMPORTANT for registration tests: always append +{{timestamp}} to the email value so each test run uses a fresh email and avoids "already registered" errors. Example: "amy+{{timestamp}}@gmail.com".
+   Use successUrl (URL path the page redirects to after success) — do NOT use successSelector for registration as success pages vary.
 
 API CHECKS (use when the test validates a REST endpoint, not the browser UI):
 10. api_request → make an HTTP request and verify status code, response body, and speed
@@ -120,14 +110,23 @@ FALLBACK (only if no CSS selector can be reliably derived):
 11. html_contains    → { "check": "html_contains",    "value": "exact string in raw HTML" }
 12. html_not_contains → { "check": "html_not_contains", "value": "string that must NOT appear" }
 
-CSS selector writing rules (critical for SPAs):
-- Text matching:   button:has-text('Sign In'), a:has-text('Login'), button:has-text('Add to Cart')
-- Aria attributes: [aria-label*='search'], [role='navigation'], [aria-label*='cart']
-- Partial classes: [class*='logo'], [class*='cart'], [class*='nav'], [class*='search']
-- Input types:     input[type='password'], input[type='email'], input[placeholder*='search']
-- Links:           a[href*='/login'], a[href*='/cart'], a[href='/']
+NAVIGATION — add "navigateUrl" when the check must run on a page different from the starting URL:
+- If the test is about a registration form, add "navigateUrl": "<baseUrl>/register"
+- If the test is about a login page, add "navigateUrl": "<baseUrl>/login"
+- If the test is about a cart/checkout, add "navigateUrl": "<baseUrl>/cart"
+- The runner navigates to that URL first, then runs the check — this is critical for multi-page flows
+- For homepage checks (MT-01, MT-02, etc.) — do NOT include navigateUrl
+
+CSS selector writing rules:
+- Text matching:   button:has-text('Sign In'), a:has-text('Register')
+- Aria attributes: [aria-label*='search'], [role='navigation']
+- Partial classes: [class*='logo'], [class*='cart'], [class*='nav']
+- Input types:     input[type='password'], input[type='email']
+- Input by name:   input[name='Password'], input[name='Email'] (prefer name over id — more stable)
+- Links:           a[href*='/login'], a[href*='/register']
 - Structural:      header, nav, footer, form, main
 - AVOID exact obfuscated class names like ".sc-abc123"
+- ALWAYS prefer input[name='...'] over input[id='...'] for form fields — name attributes are more reliable
 
 Look at the HTML source below to find correct selectors that actually exist on the page.
 
@@ -141,6 +140,17 @@ Return ONLY valid JSON — no markdown, no extra text:
       "expected": "What correct behaviour looks like",
       "check": "visible",
       "selector": "header [class*='logo'], a[href='/']"
+    },
+    {
+      "id": "MT-05",
+      "area": "Security",
+      "name": "Password field is masked on registration form",
+      "expected": "Password input type is password",
+      "check": "attr_equals",
+      "navigateUrl": "https://demowebshop.tricentis.com/register",
+      "selector": "input[name='Password'], input[id='Password']",
+      "attribute": "type",
+      "expectedValue": "password"
     }
   ]
 }
@@ -148,49 +158,11 @@ Return ONLY valid JSON — no markdown, no extra text:
 HTML source (use this to pick selectors that actually exist):
 ${stripped}`;
 
-  for (const { model, name: modelName } of geminiModels) {
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        const result = await model.generateContent(prompt);
-        console.log(`   🔵 AI converted ${userTests.length} descriptions → checks (${modelName})\n`);
-        const raw = result.response.text().trim()
-          .replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
-        const parsed = JSON.parse(raw);
-        return parsed.testCases ?? parsed;
-      } catch (err) {
-        const isQuota = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
-        const is404   = err.message?.includes("404");
-        if (isQuota || is404) { console.log(`   ⚠️  ${modelName} ${is404 ? "not available" : "quota exhausted"} — switching…`); break; }
-        const is429 = err.message?.includes("429");
-        const is503 = err.message?.includes("503");
-        if ((!is429 && !is503) || attempt === 4) { console.log(`   ⚠️  ${modelName} failed — switching…`); break; }
-        const wait = is503 ? 10000 : 20000;
-        console.log(`   ⏳ ${modelName} busy — retrying in ${wait / 1000}s… (${attempt}/4)`);
-        await new Promise(r => setTimeout(r, wait));
-      }
-    }
-  }
-  // ── Claude fallback ──────────────────────────────────────────────────────────
-  if (process.env.CLAUDE_API_KEY) {
-    try {
-      const { default: Anthropic } = await import("@anthropic-ai/sdk");
-      const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
-      console.log("   🟣 Gemini quota exhausted — falling back to Claude Haiku…");
-      const msg = await anthropic.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 8192,
-        messages: [{ role: "user", content: prompt }]
-      });
-      console.log("   🟣 Provider: Claude Haiku [fallback]\n");
-      const raw = msg.content[0].text.trim()
-        .replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
-      const parsed = JSON.parse(raw);
-      return parsed.testCases ?? parsed;
-    } catch (err) {
-      console.log(`   ❌ Claude fallback failed: ${err.message.slice(0, 100)}`);
-    }
-  }
-  throw new Error("All AI models are currently unavailable (quota exhausted or service down). Please try again later.");
+  const { data: testCases } = await generateJsonWithFallback(prompt, {
+    maxTokens: 8192,
+    successMessage: `AI converted ${userTests.length} descriptions to checks`
+  });
+  return testCases;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -242,7 +214,8 @@ async function main() {
         await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "pass" });
       } else {
         console.log(`❌ FAIL — ${result.actual}`);
-        await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "fail", actual: result.actual });
+        const screenshot = await captureFailureScreenshot(page, RUN_ID, tc.id);
+        await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "fail", actual: result.actual, screenshot });
         failures.push({
           id:         tc.id,
           title:      `${tc.id} — ${tc.name}`,
@@ -250,12 +223,14 @@ async function main() {
           culprit:    tc.id,
           testCase:   tc.id,
           expected:   tc.expected,
-          area:       tc.area || "Frontend"
+          area:       tc.area || "Frontend",
+          screenshot
         });
       }
     } catch (err) {
       console.log(`💥 ERROR — ${err.message}`);
-      await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "error", actual: err.message });
+      const screenshot = await captureFailureScreenshot(page, RUN_ID, tc.id);
+      await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "error", actual: err.message, screenshot });
     }
   }
 
@@ -274,6 +249,7 @@ async function main() {
           status: r.duplicate ? "duplicate" : "fail",
           actual: failure?.errorValue,
           category: r.category, reason: r.reason, jiraUrl: r.jiraUrl,
+          screenshot: failure?.screenshot,
           duplicate: r.duplicate, repeatCount: r.repeatCount,
           pendingApproval: r.pendingApproval || false
         });

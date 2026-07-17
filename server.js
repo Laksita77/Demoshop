@@ -2,26 +2,85 @@ require("dotenv").config();
 const http               = require("http");
 const fs                 = require("fs");
 const path               = require("path");
-const { runAutomation, processApproval, declineApproval, getPendingApproval } = require("./automation");
+const os                 = require("os");
+const { runAutomation, runBatchAutomation, processApproval, declineApproval, getPendingApproval } = require("./automation");
 const { sendTestEmail } = require("./email");
-const { handleChat }     = require("./chat-agent");
+const { handleChat, stopActive, resumeLastCommand } = require("./chat-agent");
 const { listSites, listSprints, listRuns } = require("./storage");
 
 const PORT = process.env.PORT || 3000;
 
 // ── SSE state ─────────────────────────────────────────────────────────────────
 const sseClients = [];
-let   currentRun = { id: null, tests: [], started: null, finished: false };
+let   currentRun      = { id: null, tests: [], started: null, finished: false };
+let   lastChatMessage = null;   // stored on every /chat call so Resume can replay it
 
 function broadcast(data) {
   const msg = `data: ${JSON.stringify(data)}\n\n`;
   sseClients.forEach(c => { try { c.write(msg); } catch (_) {} });
 }
 
+function parseMultipart(req, maxBytes = 15 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    const type = req.headers["content-type"] || "";
+    const match = type.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+    if (!match) return reject(new Error("Missing multipart boundary"));
+
+    const boundary = "--" + (match[1] || match[2]);
+    const chunks = [];
+    let size = 0;
+
+    req.on("data", chunk => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        req.destroy();
+        reject(new Error("Upload is too large. Maximum size is 15 MB."));
+        return;
+      }
+      chunks.push(chunk);
+    });
+
+    req.on("end", () => {
+      const body = Buffer.concat(chunks).toString("binary");
+      const fields = {};
+      const files = {};
+
+      for (const rawPart of body.split(boundary)) {
+        if (!rawPart || rawPart === "--\r\n" || rawPart === "--") continue;
+        const part = rawPart.replace(/^\r\n/, "").replace(/\r\n--$/, "");
+        const headerEnd = part.indexOf("\r\n\r\n");
+        if (headerEnd === -1) continue;
+
+        const header = part.slice(0, headerEnd);
+        let content = part.slice(headerEnd + 4);
+        if (content.endsWith("\r\n")) content = content.slice(0, -2);
+
+        const nameMatch = header.match(/name="([^"]+)"/i);
+        if (!nameMatch) continue;
+        const name = nameMatch[1];
+        const fileMatch = header.match(/filename="([^"]*)"/i);
+
+        if (fileMatch && fileMatch[1]) {
+          files[name] = {
+            filename: path.basename(fileMatch[1]),
+            buffer: Buffer.from(content, "binary")
+          };
+        } else {
+          fields[name] = Buffer.from(content, "binary").toString("utf8");
+        }
+      }
+
+      resolve({ fields, files });
+    });
+
+    req.on("error", reject);
+  });
+}
+
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
 
-  // ── 1. Bug log from frontend → Gemini classify → Jira ──────────────────────
+  // ── 1. Bug log from frontend → Gemini classify → approval email → Jira ────────
   if (req.method === "POST" && req.url === "/log-bug") {
     let body = "";
     req.on("data", chunk => (body += chunk));
@@ -29,28 +88,27 @@ const server = http.createServer((req, res) => {
       try {
         const { field, message, data } = JSON.parse(body);
         const timestamp = new Date().toLocaleTimeString();
+        const bugId = `SH-${Date.now().toString(36).slice(-5).toUpperCase()}`;
 
-        // Print to terminal
         console.log(
-          `\n[${timestamp}] ISSUE DETECTED\n` +
+          `\n[${timestamp}] SHOP BUG DETECTED\n` +
+          `  ID      : ${bugId}\n` +
           `  Field   : ${field}\n` +
           `  Error   : ${message}\n` +
           `  Value   : ${data}\n`
         );
 
-        // Gemini classify → Jira
-        runAutomation({
-          data: {
-            issue: {
-              title:     `${field}: ${message}`,
-              level:     "error",
-              culprit:   field,
-              firstSeen: new Date().toISOString(),
-              metadata:  { type: field, value: data },
-              project:   { name: "DemoShop" }
-            }
-          }
-        }).catch(err => console.error("[Automation Error]", err.message));
+        // Route through approval flow — sends email before creating any Jira ticket
+        runBatchAutomation([{
+          id:         bugId,
+          title:      `${field}: ${message}`,
+          errorType:  field,
+          errorValue: message,
+          culprit:    field,
+          testCase:   bugId,
+          expected:   "No bug",
+          area:       "Frontend"
+        }]).catch(err => console.error("[Shop Bug Error]", err.message));
 
       } catch (_) {}
       res.writeHead(200);
@@ -73,6 +131,7 @@ const server = http.createServer((req, res) => {
 
       let { message } = JSON.parse(body || "{}");
       if (!message) { res.end(); return; }
+      lastChatMessage = message;   // save so Resume can replay
 
       handleChat(message, (chunk) => {
         try {
@@ -85,6 +144,66 @@ const server = http.createServer((req, res) => {
   }
 
   // ── 3. Receive test result from runners → broadcast to dashboard ───────────
+
+  if (req.method === "POST" && req.url === "/chat-excel") {
+    res.writeHead(200, {
+      "Content-Type":  "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection":    "keep-alive",
+      "Access-Control-Allow-Origin": "*"
+    });
+
+    parseMultipart(req)
+      .then(({ fields, files }) => {
+        const message = (fields.message || "").trim();
+        const uploaded = files.excel || files.file;
+        if (!uploaded) {
+          res.write(`data: ${JSON.stringify({ type: "error", text: "Please upload an Excel, CSV, PDF, or Word file." })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+          res.end();
+          return;
+        }
+
+        const ext = path.extname(uploaded.filename).toLowerCase();
+        if (![".xlsx", ".xls", ".csv", ".pdf", ".doc", ".docx"].includes(ext)) {
+          res.write(`data: ${JSON.stringify({ type: "error", text: "Only .xlsx, .xls, .csv, .pdf, .doc, and .docx files are supported." })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+          res.end();
+          return;
+        }
+
+        const uploadDir = path.join(__dirname, "uploads");
+        fs.mkdirSync(uploadDir, { recursive: true });
+        const tmpFile = path.join(uploadDir, `qa-upload-${Date.now()}-${uploaded.filename}`);
+        fs.writeFileSync(tmpFile, uploaded.buffer);
+        lastChatMessage = message;
+
+        const send = (chunk) => {
+          try {
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            if (chunk.type === "done") res.end();
+          } catch (_) {}
+        };
+
+        handleChat(message, send, { excelFile: tmpFile, excelName: uploaded.filename })
+          .catch(err => {
+            try {
+              res.write(`data: ${JSON.stringify({ type: "error", text: err.message })}\n\n`);
+              res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+              res.end();
+            } catch (_) {}
+          })
+          .finally(() => {});
+      })
+      .catch(err => {
+        try {
+          res.write(`data: ${JSON.stringify({ type: "error", text: err.message })}\n\n`);
+          res.write(`data: ${JSON.stringify({ type: "done" })}\n\n`);
+          res.end();
+        } catch (_) {}
+      });
+    return;
+  }
   if (req.method === "POST" && req.url === "/test-result") {
     let body = "";
     req.on("data", chunk => (body += chunk));
@@ -189,6 +308,28 @@ const server = http.createServer((req, res) => {
   }
 
   // ── 5. Serve shop.html ──────────────────────────────────────────────────────
+  if (req.method === "GET" && req.url.startsWith("/screenshots/")) {
+    try {
+      const root = path.resolve(__dirname, "screenshots");
+      const requestPath = decodeURIComponent(req.url.split("?")[0].slice("/screenshots/".length));
+      const filePath = path.resolve(root, requestPath);
+      const rel = path.relative(root, filePath);
+
+      if (rel.startsWith("..") || path.isAbsolute(rel)) {
+        res.writeHead(403); res.end("Forbidden"); return;
+      }
+
+      fs.readFile(filePath, (err, data) => {
+        if (err) { res.writeHead(404); res.end("Screenshot not found"); return; }
+        res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+        res.end(data);
+      });
+    } catch (_) {
+      res.writeHead(400); res.end("Invalid screenshot path");
+    }
+    return;
+  }
+
   if (req.method === "GET" && (req.url === "/" || req.url === "/shop" || req.url === "/shop.html")) {
     const filePath = path.join(__dirname, "shop.html");
     fs.readFile(filePath, (err, data) => {
@@ -203,6 +344,38 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/current-run") {
     res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
     res.end(JSON.stringify(currentRun));
+    return;
+  }
+
+  // ── 6b. Stop the active test run ─────────────────────────────────────────────
+  if (req.method === "POST" && req.url === "/stop") {
+    stopActive();
+    currentRun.finished = true;
+    broadcast(currentRun);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    return;
+  }
+
+  // ── 6c. Resume — re-run the exact last chat message ─────────────────────────
+  if (req.method === "POST" && req.url === "/resume") {
+    if (!lastChatMessage) {
+      res.writeHead(400, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: false, error: "No previous run to resume" }));
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+    // Re-run the exact child-process command. This preserves Excel upload files,
+    // scenario files, counts, URLs, and manual/story temp-file arguments.
+    resumeLastCommand(() => {}).catch(() => {});
+    return;
+  }
+
+  // ── 6d. Public config — exposes non-secret env vars for the dashboard ─────────
+  if (req.method === "GET" && req.url === "/config") {
+    res.writeHead(200, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+    res.end(JSON.stringify({ qaLeadEmail: process.env.QA_LEAD_EMAIL || "" }));
     return;
   }
 

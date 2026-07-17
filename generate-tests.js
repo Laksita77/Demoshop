@@ -1,25 +1,10 @@
 require("dotenv").config();
 const fs                     = require("fs");
 const path                   = require("path");
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { runBatchAutomation } = require("./automation");
-const { getPageAndHtml, stripHtml, executeCheck } = require("./utils");
+const { getPageAndHtml, stripHtml, executeCheck, captureFailureScreenshot } = require("./utils");
 const { saveTestCases, saveRunResult } = require("./storage");
-
-const genAI        = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const genAI2       = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY);
-const geminiModels = [
-  // Key 1
-  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),        name: "Gemini 2.5 Flash [K1]"      },
-  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),   name: "Gemini 2.5 Flash Lite [K1]" },
-  { model: genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" }),name: "Gemini Flash Lite [K1]"     },
-  { model: genAI.getGenerativeModel({ model: "gemini-2.0-flash" }),        name: "Gemini 2.0 Flash [K1]"      },
-  // Key 2 (separate quota)
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash" }),       name: "Gemini 2.5 Flash [K2]"      },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),  name: "Gemini 2.5 Flash Lite [K2]" },
-  { model: genAI2.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K2]"     },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.0-flash" }),       name: "Gemini 2.0 Flash [K2]"      },
-];
+const { generateJsonWithFallback } = require("./ai-provider");
 
 const RUN_ID = `ai-run-${Date.now()}`;
 
@@ -60,6 +45,12 @@ MANDATORY DISTRIBUTION — you MUST include at least one test from each category
 • Trivial   (⚪) — label text, capitalisation, minor content check
 
 DO NOT generate only Frontend checks. Spread evenly.
+
+PASS/FAIL MIXING RULE:
+- Prefer a realistic MIX of tests that are likely to pass and tests that may expose defects.
+- Include positive checks for behavior the HTML clearly supports, plus negative/boundary/security checks where a defect is plausible.
+- Do NOT invent impossible failures just to force failed results.
+- If the website clearly supports only passing checks or only failing checks, then same-kind results are allowed.
 
 CHECK TYPES — pick the best type for each category:
 
@@ -123,40 +114,10 @@ ${stripped}`;
 
   console.log(`\n🤖 Sending ${SOURCE_LABEL} to AI for test case generation…\n`);
 
-  let rawText;
-  for (const { model, name: modelName } of geminiModels) {
-    let succeeded = false;
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        const result = await model.generateContent(prompt);
-        console.log(`   🔵 Provider: ${modelName}`);
-        rawText = result.response.text();
-        succeeded = true;
-        break;
-      } catch (gemErr) {
-        const isQuota = gemErr.message?.includes("quota") || gemErr.message?.includes("RESOURCE_EXHAUSTED");
-        const is404   = gemErr.message?.includes("404");
-        if (isQuota || is404) {
-          console.log(`   ⚠️  ${modelName} ${is404 ? "not available" : "quota exhausted"} — switching to next model…`);
-          break;
-        }
-        const retryable = gemErr.message?.includes("503") || gemErr.message?.includes("429");
-        if (!retryable || attempt === 4) { console.log(`   ⚠️  ${modelName} failed — switching…`); break; }
-        const match = gemErr.message.match(/retry in (\d+(?:\.\d+)?)s/i);
-        const wait  = gemErr.message?.includes("503") ? 10000 : (match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 20000);
-        console.log(`   ⏳ ${modelName} busy — waiting ${Math.ceil(wait / 1000)}s then retrying (${attempt}/4)…`);
-        await new Promise(r => setTimeout(r, wait));
-      }
-    }
-    if (succeeded) break;
-  }
-
-  if (!rawText) {
-    throw new Error("All AI models are currently unavailable (quota exhausted or service down). Please try again later.");
-  }
-  rawText = rawText.trim().replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
-  const parsed    = JSON.parse(rawText);
-  const testCases = parsed.testCases ?? parsed;
+  const { data: testCases } = await generateJsonWithFallback(prompt, {
+    maxTokens: 8192,
+    successMessage: `AI generated ${TEST_COUNT || 10} test cases`
+  });
 
   // Save to organised folder: test-suites/{domain}/{sprint}/testcases.json
   const domain = TARGET_URL ? new URL(TARGET_URL).hostname : "DemoShop";
@@ -194,16 +155,19 @@ async function runGeneratedTests(testCases, html, page = null) {
         await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "pass" });
       } else {
         console.log(`❌ FAIL — ${result.actual}`);
-        await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "fail", actual: result.actual });
+        const screenshot = await captureFailureScreenshot(page, RUN_ID, tc.id);
+        await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "fail", actual: result.actual, screenshot });
         failures.push({
           id: tc.id, title: `${tc.id} — ${tc.name}`,
           errorType: tc.name, errorValue: result.actual,
-          culprit: tc.id, testCase: tc.id, expected: tc.expected, area: tc.area || ""
+          culprit: tc.id, testCase: tc.id, expected: tc.expected, area: tc.area || "",
+          screenshot
         });
       }
     } catch (err) {
       console.log(`💥 ERROR — ${err.message}`);
-      await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "error", actual: err.message });
+      const screenshot = await captureFailureScreenshot(page, RUN_ID, tc.id);
+      await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "error", actual: err.message, screenshot });
     }
   }
 
@@ -223,6 +187,7 @@ async function runGeneratedTests(testCases, html, page = null) {
           id: r.id, name: failure?.title || r.id, area: failure?.area,
           status: "fail", actual: failure?.errorValue,
           category: r.category, reason: r.reason, jiraUrl: r.jiraUrl,
+          screenshot: failure?.screenshot,
           duplicate: r.duplicate, repeatCount: r.repeatCount,
           pendingApproval: r.pendingApproval || false
         });

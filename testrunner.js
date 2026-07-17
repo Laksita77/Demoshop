@@ -96,7 +96,11 @@ async function runAllTests() {
           actual:   failure?.errorValue,
           category: r.category,
           reason:   r.reason,
-          jiraUrl:  r.jiraUrl
+          jiraUrl:  r.jiraUrl,
+          pendingApproval: r.pendingApproval || false,
+          duplicate: r.duplicate || false,
+          duplicateKey: r.duplicateKey,
+          repeatCount: r.repeatCount
         });
       });
       jiraCount = batchResults.filter(r => r.logged).length;

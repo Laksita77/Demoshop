@@ -99,7 +99,15 @@ function parseIntent(message) {
   const isMultiLine   = message.split("\n").filter(l => l.trim().length > 4).length >= 2;
   const isPastedTests = (hasTcPattern || (hasActionExp && isMultiLine));
 
-  if (!isGenerate && (hasManual || isPastedTests || (hasColon && (url || msg.includes("shop"))))) {
+  // Detect multi-line manual tests: 2+ lines each containing action/verify keywords
+  // This catches cases where user pastes test descriptions WITHOUT TC-xx or colons
+  const actionLines = message.split("\n").filter(l =>
+    l.trim().length > 10 &&
+    /\b(verify|check|ensure|confirm|navigate|fill|click|validate|open|visit)\b/i.test(l)
+  );
+  const isMultiLineManual = actionLines.length >= 2;
+
+  if (!isGenerate && (hasManual || isPastedTests || isMultiLineManual || (hasColon && (url || msg.includes("shop"))))) {
     let tests = [];
 
     if (isPastedTests) {
@@ -117,6 +125,9 @@ function parseIntent(message) {
       if (tests.length === 0) {
         tests = message.split("\n").map(t => t.trim()).filter(t => t.length > 3);
       }
+    } else if (isMultiLineManual) {
+      // Multi-line test descriptions pasted directly — each non-empty line is one test
+      tests = message.split("\n").map(t => t.trim()).filter(t => t.length > 10);
     } else {
       const colonIdx = message.indexOf(":");
       const rawTests = colonIdx !== -1 ? message.slice(colonIdx + 1) : message;
@@ -154,10 +165,43 @@ function parseIntent(message) {
 }
 
 // ── Main chat handler ─────────────────────────────────────────────────────────
-async function handleChat(message, send) {
+async function handleChat(message, send, options = {}) {
   send({ type: "thinking", text: "Analysing your request…" });
 
   const intent = parseIntent(message);
+
+  if (options.excelFile) {
+    const scenario = message || "";
+    const sprint = intent.sprint || `run-${new Date().toISOString().split("T")[0]}`;
+    const count = intent.count || null;
+    const uploadDir = path.join(__dirname, "uploads");
+    fs.mkdirSync(uploadDir, { recursive: true });
+    const scenarioFile = path.join(uploadDir, `qa-excel-scenario-${Date.now()}.json`);
+    fs.writeFileSync(scenarioFile, JSON.stringify({ scenario }), "utf8");
+
+    const args = [
+      "excel-runner.js",
+      "--excel-file", options.excelFile,
+      "--scenario-file", scenarioFile,
+      "--sprint", sprint
+    ];
+    if (count) args.push("--count", String(count));
+    if (intent.url) args.push("--url", intent.url);
+
+    send({ type: "reply", text: `Generating ${count || "auto"} test cases from your document${intent.url ? ` for ${new URL(intent.url).hostname}` : ""}...` });
+    send({ type: "log", text: [
+      "Document-Driven Test Run",
+      `   File     : ${options.excelName || path.basename(options.excelFile)}`,
+      `   Site     : ${intent.url || "shop.html"}`,
+      `   Sprint   : ${sprint}`,
+      `   Tests    : ${count || "auto by scenario count"}`,
+      `   Scenario : ${scenario.slice(0, 120)}${scenario.length > 120 ? "..." : ""}`,
+      ""
+    ].join("\n") });
+    await runProcess("node", args, send);
+    return;
+  }
+
   send({ type: "reply", text: intent.reply });
 
   // ── HELP ──────────────────────────────────────────────────────────────────
@@ -286,14 +330,40 @@ async function handleChat(message, send) {
   send({ type: "done" });
 }
 
+// ── Active process tracker (used by /stop and /resume) ───────────────────────
+let _activeChild   = null;
+let _lastCmd       = null;   // { cmd, args } of the most recent run
+
+function stopActive() {
+  if (_activeChild) {
+    try { _activeChild.kill("SIGTERM"); } catch (_) {}
+    _activeChild = null;
+  }
+}
+
+function resumeLastCommand(send) {
+  if (!_lastCmd) {
+    send({ type: "error", text: "No previous command to resume." });
+    send({ type: "done" });
+    return Promise.resolve(false);
+  }
+  send({ type: "log", text: `▶  Resuming: ${_lastCmd.cmd} ${_lastCmd.args.join(" ")}\n` });
+  return runProcess(_lastCmd.cmd, _lastCmd.args, send).then(() => true);
+}
+
 // ── Spawn a child process and stream its output ───────────────────────────────
 function runProcess(cmd, args, send) {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, {
+    const executable = cmd === "node" ? process.execPath : cmd;
+    const child = spawn(executable, args, {
       cwd:   path.join(__dirname),
-      shell: true,
+      shell: false,
+      windowsHide: true,
       env:   { ...process.env }
     });
+
+    _activeChild = child;
+    _lastCmd     = { cmd, args };
 
     child.stdout.on("data", (d) => send({ type: "log", text: d.toString() }));
     child.stderr.on("data", (d) => {
@@ -302,8 +372,11 @@ function runProcess(cmd, args, send) {
     });
 
     child.on("close", (code) => {
+      if (_activeChild === child) _activeChild = null;
       if (code === 0) {
-        send({ type: "success", text: "✅ Pipeline completed successfully!" });
+        send({ type: "success", text: "✅ QA run completed successfully!" });
+      } else if (code === null) {
+        send({ type: "error", text: "⏹ Run stopped." });
       } else {
         send({ type: "error", text: `⚠️  Process exited with code ${code}` });
       }
@@ -319,4 +392,4 @@ function runProcess(cmd, args, send) {
   });
 }
 
-module.exports = { handleChat };
+module.exports = { handleChat, stopActive, resumeLastCommand };

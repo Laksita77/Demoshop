@@ -411,22 +411,31 @@ function ruleBasedClassify(failures) {
   const results = failures.map(f => {
     const text = `${f.title} ${f.errorValue} ${f.culprit}`.toLowerCase();
 
-    let category = "Frontend";
-    let reason   = "Default classification — AI models temporarily unavailable";
+    // Use the test's declared area first — it's the most reliable signal
+    let category = CATEGORY_CONFIG[f.area] ? f.area : "Frontend";
+    let reason   = f.area && CATEGORY_CONFIG[f.area]
+      ? `Classified as ${f.area} based on test area (AI models temporarily unavailable)`
+      : "Default classification — AI models temporarily unavailable";
 
-    if (/password|card|credit|auth|token|secret|leak|xss|inject/.test(text)) {
-      category = "Security";
-      reason   = "Contains security-sensitive keywords (password/card/auth)";
-    } else if (/calculat|total|sum|price|shipping|tax|backend|server|logic|validat/.test(text)) {
-      category = "Backend";
-      reason   = "Relates to calculation or server-side validation logic";
-    } else if (/sort|nan|rating|performance|slow|algorithm|comparison/.test(text)) {
-      category = "Performance";
-      reason   = "Relates to sorting, calculation accuracy, or algorithm behaviour";
-    } else if (/display|label|badge|count|ui|layout|render|case|format/.test(text)) {
-      category = "Frontend";
-      reason   = "Relates to UI display, labels, or front-end rendering";
+    // Only override if the actual error text strongly contradicts the area
+    if (!f.area || !CATEGORY_CONFIG[f.area]) {
+      if (/password|card|credit|auth|token|secret|leak|xss|inject/.test(text)) {
+        category = "Security";
+        reason   = "Contains security-sensitive keywords (password/card/auth)";
+      } else if (/calculat|total|sum|price|shipping|tax|backend|server|logic|validat/.test(text)) {
+        category = "Backend";
+        reason   = "Relates to calculation or server-side validation logic";
+      } else if (/timeout|enetunreach|slow|performance|connect/.test(text)) {
+        category = "Performance";
+        reason   = "Relates to speed or connectivity failure";
+      } else if (/capitalisa|casing|whitespace|cosmetic|label/.test(text)) {
+        category = "Trivial";
+        reason   = "Cosmetic or non-critical text mismatch";
+      }
     }
+
+    category = resolveCategory(f);
+    reason = `Classified as ${category} from the test name, expected result, and actual failure text`;
 
     return {
       id:                   f.id,
@@ -443,135 +452,169 @@ function ruleBasedClassify(failures) {
 
 // ── AI call: Gemini (tries each model in order) ───────────────────────────────
 async function generateWithRetry(prompt, maxRetries = 4) {
+  const cleanAndValidateJson = (raw) => {
+    const cleaned = String(raw || "")
+      .trim()
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/i, "")
+      .trim();
+    JSON.parse(cleaned);
+    return cleaned;
+  };
+
+  const claudeKey = process.env.CLAUDE_API_KEY || process.env.ANTHROPIC_API_KEY;
+  const claudeModel = process.env.CLAUDE_MODEL || process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001";
+
+  if (claudeKey) {
+    try {
+      const { default: Anthropic } = await import("@anthropic-ai/sdk");
+      const anthropic = new Anthropic({ apiKey: claudeKey });
+      const msg = await anthropic.messages.create({
+        model: claudeModel,
+        max_tokens: 8192,
+        messages: [{ role: "user", content: prompt }]
+      });
+      const raw = msg.content
+        .map(part => part.type === "text" ? part.text : "")
+        .join("\n");
+      const cleaned = cleanAndValidateJson(raw);
+      console.log(`   Provider: Claude (${claudeModel})`);
+      return cleaned;
+    } catch (err) {
+      console.log(`   Claude failed: ${err.message.slice(0, 140)} - switching to Gemini...`);
+    }
+  } else {
+    console.log("   Claude not configured - using Gemini...");
+  }
+
   for (let m = 0; m < geminiModels.length; m++) {
     const { model, name: modelName } = geminiModels[m];
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
         const result = await model.generateContent(prompt);
-        console.log(`   🔵 Provider: ${modelName}`);
-        return result.response.text().trim()
-          .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+        const cleaned = cleanAndValidateJson(result.response.text());
+        console.log(`   Provider: ${modelName}`);
+        return cleaned;
       } catch (err) {
-        const isQuota   = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
-        const is429     = err.message?.includes("429");
-        const is503     = err.message?.includes("503");
-        const is404     = err.message?.includes("404");
+        const isQuota = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
+        const is429 = err.message?.includes("429");
+        const is503 = err.message?.includes("503");
+        const is404 = err.message?.includes("404");
         const isRetryable = (is429 || is503) && !isQuota;
 
         if (isQuota || is404) {
-          // Quota exhausted or model not found — try next model immediately
           const reason = is404 ? "not available" : "quota exhausted";
-          console.log(`   ⚠️  ${modelName} ${reason} — switching to next model…`);
+          console.log(`   ${modelName} ${reason} - switching to next model...`);
           break;
         }
 
         if (is503 && attempt < maxRetries) {
-          // Overloaded — wait briefly then try next model (don't keep retrying same model)
-          console.log(`   ⏳ ${modelName} overloaded — switching to next model…`);
+          console.log(`   ${modelName} overloaded - switching to next model...`);
           break;
         }
 
         if (!isRetryable || attempt === maxRetries) {
-          console.log(`   ❌ ${modelName} failed (attempt ${attempt}): ${err.message.slice(0, 120)}`);
+          console.log(`   ${modelName} failed (attempt ${attempt}): ${err.message.slice(0, 120)}`);
           if (m === geminiModels.length - 1) throw err;
           break;
         }
 
-        const match  = err.message.match(/retry in (\d+(?:\.\d+)?)s/i);
-        const waitMs = match ? Math.ceil(parseFloat(match[1])) * 1000 + 1000 : 20000;
-        console.log(`   ⏳ ${modelName} rate limited — waiting ${Math.ceil(waitMs / 1000)}s then retrying (${attempt}/${maxRetries})…`);
+        const match = err.message.match(/retry in (\d+(?:\.\d+)?)s/i);
+        const waitMs = Math.min(match ? Math.ceil(parseFloat(match[1])) * 1000 + 500 : 4000, 5000);
+        console.log(`   ${modelName} rate limited - waiting ${Math.ceil(waitMs / 1000)}s then retrying (${attempt}/${maxRetries})...`);
         await new Promise(r => setTimeout(r, waitMs));
       }
     }
   }
 
-  // ── Claude fallback ──────────────────────────────────────────────────────────
-  if (process.env.CLAUDE_API_KEY) {
-    try {
-      const { default: Anthropic } = await import("@anthropic-ai/sdk");
-      const anthropic = new Anthropic({ apiKey: process.env.CLAUDE_API_KEY });
-      console.log("   🟣 Gemini quota exhausted — falling back to Claude Haiku…");
-      const msg = await anthropic.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 8192,
-        messages: [{ role: "user", content: prompt }]
-      });
-      console.log("   🟣 Provider: Claude Haiku [fallback]");
-      return msg.content[0].text.trim()
-        .replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
-    } catch (err) {
-      console.log(`   ❌ Claude fallback failed: ${err.message.slice(0, 100)}`);
-    }
-  }
-  throw new Error("All Gemini models unavailable — quota exhausted or service down");
+  throw new Error("Claude and Gemini are unavailable or returned invalid JSON");
 }
 
-// ── BATCH pipeline — classifies ALL failures with Gemini in one call ─────────
+// ── Infer the real category from test name + error — never trust area=Frontend blindly ──
+function resolveCategory(f) {
+  const text = `${f.title || ""} ${f.expected || ""} ${f.errorValue || ""}`.toLowerCase();
+
+  if (/(locator\.(click|fill|isvisible)|element not found|not visible|not found in inventory|not found in cart|product not found|product.*not.*visible|button.*not.*available|button.*did not appear|cart item.*not found|cart badge shows|remove button|could not click|selector|rendered|ui check failed)/.test(text))
+    return "Frontend";
+
+  if (/password.*mask|mask.*password|autocomplete|novalidate|sensitive.*data|html.*password|sql.?inject|xss|csrf|token|secret|auth bypass|without.*auth.*40[13]|admin.*40[13]|https.*redirect|http.*https/.test(text))
+    return "Security";
+
+  if (/(response.?time|load.?time|within \d+\s*(ms|millisec|second)|3 second|1 second|800ms|500ms|speed|slow|page.*timeout|api.*timeout|request.*timeout)/.test(text) &&
+      !/(locator|click|button|element|selector|not visible|not found)/.test(text))
+    return "Performance";
+
+  if (/(api.*respond|endpoint|status.*4\d\d|status.*5\d\d|returns.*\d\d\d|server|backend|calculation|total|sum|price|shipping|tax|coupon|order.*accepted|redirect.*wrong|wrong.*redirect|form.*submit|server.*valid|valid\s+(login|credentials)|login\s+with\s+valid|invalid\s+credentials|wrong\s+credentials|locked\s+out|credentials.*accepted|login.*rejected|login.*did not redirect)/.test(text))
+    return "Backend";
+
+  if (/page.?title|browser.*title|copyright|footer.*text|button.*text.*say|says.*sign.?in|says.*login|favicon|meta.*robot|capitalisa/.test(text))
+    return "Trivial";
+
+  if (f.area && f.area !== "Frontend" && CATEGORY_CONFIG[f.area]) return f.area;
+
+  return "Frontend";
+}
+
+// ── BATCH pipeline — classifies ALL failures then sends for approval ──────────
 // failures: [{ id, title, errorType, errorValue, culprit, expected, area, testCase }]
 // onResult(result) is called immediately after each ticket is created/skipped
 async function runBatchAutomation(failures, onResult = null) {
   if (failures.length === 0) return [];
 
-  console.log(`\n🤖 Sending ${failures.length} failure(s) to Gemini for batch classification…\n`);
+  console.log(`\n🤖 Sending ${failures.length} failure(s) to AI for descriptions…\n`);
 
   const prompt = `
-You are a senior QA engineer classifying failing test cases by the TYPE OF BUG, not by keywords in the test name.
+You are a senior QA engineer. For each failing test, write a short professional description of why it failed and how to fix it.
+Do NOT change the category — it is already set. Just write the reason and fixes.
 
-For each failure, reason about: "Which layer of the application caused this failure?"
-
-CATEGORIES (pick based on what actually broke, not what the test is named):
-- Frontend    → The browser/UI layer failed. Element not rendered, wrong CSS, missing component, broken layout, wrong text displayed, image not loading. The issue lives in HTML/CSS/JS on the client side.
-- Backend     → The server/API layer failed. Wrong redirect, auth not enforced, API returned wrong data, form submission not processed, database not updated, server-side validation missing.
-- Security    → A security control failed. SQL injection not blocked, XSS not sanitised, unauthenticated access allowed, sensitive data exposed, CSRF not protected, password stored in plain text.
-- Performance → Speed/reliability failed. Page load timeout, connection refused, server too slow (>3s), network error (ENETUNREACH), service unavailable.
-- Trivial     → Non-critical cosmetic issue. Wrong capitalisation, minor text mismatch, extra whitespace, non-breaking visual difference.
-
-HOW TO CLASSIFY:
-1. Read the "Expected" — what should have happened?
-2. Read the "Actual error" — what went wrong?
-3. Ask: is this a rendering problem (Frontend), a server/logic problem (Backend), a security hole (Security), a speed problem (Performance), or cosmetic (Trivial)?
-4. The test name is context only — classify based on the nature of the failure, not the name.
-
-EXAMPLES:
-- Expected: "Password field has type=password", Actual: "UI check failed: field not found" → Frontend (UI element missing)
-- Expected: "Invalid login shows error", Actual: "Redirected to dashboard" → Backend (server accepted bad credentials)
-- Expected: "SQL injection blocked", Actual: "Login succeeded with ' OR 1=1" → Security (injection not blocked)
-- Expected: "Page loads in 2s", Actual: "Connection timeout after 5s" → Performance
-- Expected: "Button label is Submit", Actual: "Button label is submit" → Trivial
-
-Test cases to classify:
 ${failures.map((f, i) => `
 [${i + 1}] ID: ${f.id}
-    Test name    : ${f.title}
-    Expected     : ${f.expected}
-    Actual error : ${f.errorValue}
+    Category  : ${resolveCategory(f)}
+    Test name : ${f.title}
+    Expected  : ${f.expected}
+    Actual    : ${f.errorValue}
 `).join("")}
 
-Reply ONLY with a valid JSON object:
+Reply ONLY with valid JSON:
 {
   "results": [
     {
       "id": "TC-XX",
-      "category": "Security|Backend|Frontend|Performance|Trivial",
-      "classificationReason": "One sentence explaining which layer broke and why",
-      "brokenCode": "One sentence describing what technically needs fixing",
+      "classificationReason": "One sentence: which layer broke and why",
+      "brokenCode": "One sentence: what specifically needs fixing",
       "fixes": ["Fix 1", "Fix 2", "Fix 3"],
       "emailBody": "Professional 2-sentence summary for the dev team"
     }
   ]
 }`;
 
-  let rawText;
+  let descriptions = {};
   try {
-    rawText = (await generateWithRetry(prompt)).trim()
+    const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 40000));
+    const rawText = (await Promise.race([generateWithRetry(prompt), timeout])).trim()
       .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
-  } catch (aiErr) {
-    console.log(`\n   ⚠️  All AI models unavailable — using rule-based classifier as fallback`);
-    rawText = ruleBasedClassify(failures);
+    const parsed = JSON.parse(rawText);
+    const results = parsed.results ?? parsed;
+    for (const r of results) descriptions[r.id] = r;
+  } catch (_) {
+    console.log(`\n   ⚠️  AI description unavailable — using defaults`);
   }
-  const parsed = JSON.parse(rawText);
-  const classifications = parsed.results ?? parsed;
+
+  // Build classifications — resolveCategory reads test name + error, never blindly uses area
+  const classifications = failures.map(f => {
+    const category = resolveCategory(f);
+    const d = descriptions[f.id] || {};
+    return {
+      id:                   f.id,
+      category,
+      classificationReason: d.classificationReason || `${category} issue: ${f.errorValue?.slice(0, 80) || "check failed"}`,
+      brokenCode:           d.brokenCode           || `Issue in ${f.culprit || f.id}: ${f.errorValue?.slice(0, 80) || ""}`,
+      fixes:                d.fixes                || ["Review and fix the identified issue", "Add automated test coverage", "Verify fix in staging"],
+      emailBody:            d.emailBody            || `Bug detected in ${category}: ${f.title}. Actual: ${f.errorValue?.slice(0, 100) || ""}`
+    };
+  });
 
   const output = [];
 
@@ -748,6 +791,17 @@ Reply ONLY with valid JSON (no markdown, no code fences):
   const rawText = (await generateWithRetry(prompt)).trim()
     .replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
   const parsed  = JSON.parse(rawText);
+
+  const inferredCategory = resolveCategory({
+    title: errorTitle,
+    expected: issue.metadata?.expected || "",
+    errorValue,
+    area: issue.metadata?.area || "",
+    culprit
+  });
+  if (!CATEGORY_CONFIG[parsed.category] || inferredCategory === "Frontend" || inferredCategory === "Performance") {
+    parsed.category = inferredCategory;
+  }
 
   if (!CATEGORY_CONFIG[parsed.category]) parsed.category = "Frontend";
   const ai = parsed;

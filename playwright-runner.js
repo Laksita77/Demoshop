@@ -1,6 +1,7 @@
 require("dotenv").config();
 const { chromium }      = require("playwright");
 const { runAutomation } = require("./automation");
+const { captureFailureScreenshot } = require("./utils");
 
 const RUN_ID = `run-${Date.now()}`;
 
@@ -350,7 +351,8 @@ async function run() {
         await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "pass" });
       } else {
         console.log(`❌ FAIL → classifying & uploading to Jira...`);
-        await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "classifying", actual: result.actual });
+        const screenshot = await captureFailureScreenshot(page, RUN_ID, tc.id);
+        await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "classifying", actual: result.actual, screenshot });
 
         const aiResult = await runAutomation({
           data: {
@@ -375,12 +377,14 @@ async function run() {
         await postResult({
           id: tc.id, name: tc.name, area: tc.area,
           status: "fail", actual: result.actual,
-          category: aiResult?.category, reason: aiResult?.reason, jiraUrl: aiResult?.jiraUrl
+          category: aiResult?.category, reason: aiResult?.reason, jiraUrl: aiResult?.jiraUrl,
+          screenshot
         });
       }
     } catch (err) {
       console.log(`💥 ERROR — ${err.message}`);
-      await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "error", actual: err.message });
+      const screenshot = await captureFailureScreenshot(page, RUN_ID, tc.id);
+      await postResult({ id: tc.id, name: tc.name, area: tc.area, status: "error", actual: err.message, screenshot });
     }
 
     await page.close();

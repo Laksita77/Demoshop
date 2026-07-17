@@ -1,15 +1,17 @@
 {
   "domain": "snapdeal.com",
   "sprints": [
-    "run-2026-05-27"
+    "run-2026-05-27",
+    "run-2026-06-29",
+    "run-2026-06-30"
   ],
-  "totalRuns": 1,
-  "lastTested": "2026-05-27T07:29:45.021Z",
+  "totalRuns": 6,
+  "lastTested": "2026-06-30T07:23:11.845Z",
   "lastSummary": {
-    "passed": 5,
-    "failed": 1,
+    "passed": 0,
+    "failed": 6,
     "total": 6,
-    "sprint": "run-2026-05-27",
-    "story": "�"
+    "sprint": "run-2026-06-30",
+    "story": "\udccb User story: As a user I want to search for products on https://snapdeal.com"
   }
 }

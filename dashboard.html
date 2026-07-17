@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QA AI Pipeline — Dashboard</title>
+  <title>QA AI — Dashboard</title>
   <style>
     :root {
       --bg:       #f0ece4;
@@ -103,6 +103,27 @@
     .tc-id   { font-family:'JetBrains Mono',monospace; font-size:.72rem; color:var(--dim); white-space:nowrap; }
     .tc-name { color:var(--text); font-weight:500; }
     .tc-sub  { font-size:.69rem; color:var(--dim); margin-top:3px; max-width:340px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .scenario-row td { background:#f4efe7; border-top:1px solid var(--border2); cursor:pointer; }
+    .scenario-row:hover td { background:#eee7dc; }
+    .scenario-title { display:flex; align-items:center; gap:10px; min-width:0; }
+    .scenario-toggle { width:22px; height:22px; border:1px solid var(--border2); border-radius:6px; display:inline-flex; align-items:center; justify-content:center; color:var(--blue); background:var(--card); font-weight:700; flex-shrink:0; }
+    .scenario-name { color:var(--text); font-weight:700; font-size:.84rem; }
+    .scenario-meta { color:var(--dim); font-size:.68rem; margin-top:2px; }
+    .scenario-counts { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+    .scenario-pill { display:inline-flex; align-items:center; padding:2px 7px; border-radius:6px; background:var(--card); border:1px solid var(--border); color:var(--muted); font-size:.66rem; font-weight:600; white-space:nowrap; }
+    .scenario-pill.pass { color:var(--green); }
+    .scenario-pill.fail { color:var(--red); }
+    .scenario-pill.wait { color:#92640a; }
+    .scenario-hidden { display:none; }
+    .scenario-detail td:first-child { padding-left:34px; }
+    .tc-steps-toggle { display:inline-block; margin-top:4px; font-size:.66rem; font-weight:600; color:var(--blue); cursor:pointer; user-select:none; }
+    .tc-steps-toggle:hover { text-decoration:underline; }
+    .tc-steps-hidden { display:none; }
+    .tc-steps-row td { background:#faf7f1; border-top:1px dashed var(--border2); }
+    .tc-steps-box { padding:6px 0 8px; }
+    .tc-steps-expected { font-size:.72rem; color:var(--muted); margin-bottom:6px; }
+    .tc-steps-list { margin:0; padding-left:20px; }
+    .tc-steps-list li { font-size:.74rem; color:var(--text); margin:3px 0; line-height:1.4; }
 
     /* Status badges */
     .status { display:inline-flex; align-items:center; gap:4px; padding:2px 9px; border-radius:6px; font-size:.69rem; font-weight:600; white-space:nowrap; letter-spacing:.2px; }
@@ -170,6 +191,11 @@
       font-size:.78rem; font-weight:600; white-space:nowrap; transition:opacity .15s; height:38px; }
     .chat-send:hover    { opacity:.85; }
     .chat-send:disabled { background:var(--surface); color:var(--dim); cursor:not-allowed; opacity:1; border:1px solid var(--border); }
+    .chat-attach { background:var(--card); border:1px solid var(--border2); color:var(--muted); min-width:70px; height:38px;
+      border-radius:7px; cursor:pointer; font-size:.78rem; font-weight:600; display:flex; align-items:center; justify-content:center; flex-shrink:0; }
+    .chat-attach:hover { color:var(--blue); border-color:var(--blue); }
+    .chat-attach:disabled { background:var(--surface); color:var(--dim); cursor:not-allowed; border-color:var(--border); }
+    .chat-file-name { font-size:.68rem; color:var(--muted); max-width:160px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; align-self:center; }
     .chat-suggestions { padding:0 12px 9px; display:flex; gap:6px; flex-wrap:wrap; background:var(--card); }
     .chip { background:var(--surface); border:1px solid var(--border); color:var(--muted); border-radius:6px;
       padding:3px 10px; font-size:.69rem; cursor:pointer; transition:all .15s; }
@@ -263,9 +289,14 @@
     /* ── Fail Reason Modal ── */
     .fail-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.38); z-index:999; align-items:center; justify-content:center; }
     .fail-overlay.open { display:flex; }
-    .fail-modal { background:var(--card); border:1px solid var(--border2); border-radius:10px; padding:22px 24px; max-width:540px; width:92%; box-shadow:0 10px 40px rgba(0,0,0,.2); position:relative; }
+    .fail-modal { background:var(--card); border:1px solid var(--border2); border-radius:10px; padding:22px 24px; max-width:760px; width:92%; box-shadow:0 10px 40px rgba(0,0,0,.2); position:relative; }
     .fail-modal-title { font-size:.88rem; font-weight:700; color:var(--red); margin-bottom:12px; display:flex; align-items:center; gap:7px; }
-    .fail-modal-body { font-size:.82rem; color:var(--text); line-height:1.7; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:12px 14px; word-break:break-word; white-space:pre-wrap; max-height:300px; overflow-y:auto; }
+    .fail-modal-body { font-size:.82rem; color:var(--text); line-height:1.6; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:14px; word-break:break-word; max-height:72vh; overflow-y:auto; }
+    .fail-detail-row { margin-bottom:12px; }
+    .fail-detail-label { font-size:.66rem; color:var(--dim); text-transform:uppercase; letter-spacing:.7px; font-weight:700; margin-bottom:4px; }
+    .fail-detail-value { color:var(--text); white-space:pre-wrap; }
+    .fail-screenshot { display:block; width:100%; max-height:420px; object-fit:contain; border:1px solid var(--border2); border-radius:6px; background:var(--card); margin-top:6px; }
+    .fail-no-screenshot { color:var(--dim); font-style:italic; }
     .fail-modal-close { position:absolute; top:11px; right:13px; background:none; border:none; cursor:pointer; color:var(--dim); font-size:1.1rem; line-height:1; padding:2px 5px; border-radius:4px; }
     .fail-modal-close:hover { background:var(--surface); color:var(--text); }
     .fail-link { cursor:pointer; text-decoration:underline; text-underline-offset:2px; }
@@ -278,10 +309,13 @@
 <!-- ── Header ── -->
 <header class="header">
   <div class="header-left">
-    <div class="logo">QA <span>AI</span> Pipeline</div>
+    <div class="logo">QA <span>AI</span></div>
     <span class="badge">Smart Test Suite</span>
   </div>
   <div class="header-right">
+    <button id="stopBtn"   onclick="stopRun()"   style="display:none;background:#d32f2f;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:.75rem;font-weight:600;cursor:pointer;letter-spacing:.2px;">⏹ Stop</button>
+    <button id="resumeBtn" onclick="resumeRun()" style="display:none;background:var(--blue);color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:.75rem;font-weight:600;cursor:pointer;letter-spacing:.2px;">▶ Resume</button>
+    <button id="downloadBtn" onclick="downloadReport()" style="display:none;background:#2e7d32;color:#fff;border:none;border-radius:6px;padding:5px 14px;font-size:.75rem;font-weight:600;cursor:pointer;letter-spacing:.2px;" title="Download the test report (scenarios, test cases, steps, pass/fail, Jira)">⬇ Download Report</button>
     <div class="live-pill">
       <div class="dot" id="dot"></div>
       <span id="liveLabel">Waiting for run…</span>
@@ -305,11 +339,15 @@
         📋 <strong>Story</strong> → <em>"As a user I want to search on https://myntra.com"</em><br>
         🌐 <strong>Generate</strong> → <em>"Generate 6 tests for flipkart.com"</em><br>
         📝 <strong>Manual</strong> → <em>"manual: check login, verify cart on amazon.in"</em><br>
+        📎 <strong>Upload</strong> → <em>attach an Excel, CSV, PDF, or Word file with scenarios &amp; test data</em><br>
         📈 <strong>Sprint Health</strong> → <em>"show sprint health"</em>
       </div>
     </div>
   </div>
   <div class="chat-input-area">
+    <input type="file" id="chatExcelFile" accept=".xlsx,.xls,.csv,.pdf,.doc,.docx" style="display:none" onchange="onExcelSelected()">
+    <button class="chat-attach" id="chatAttach" title="Upload Excel, CSV, PDF, or Word" onclick="document.getElementById('chatExcelFile').click()">Upload</button>
+    <div class="chat-file-name" id="chatFileName"></div>
     <textarea class="chat-input" id="chatInput" rows="1"
       placeholder="Ask me anything… run tests, audit accessibility, sprint health"
       onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();sendChat();}"></textarea>
@@ -426,7 +464,7 @@ Check product images are visible after login"></textarea>
 </div>
 
 
-<footer>QA AI Pipeline &nbsp;·&nbsp; Gemini AI &nbsp;·&nbsp; Sprint Health &nbsp;·&nbsp; WCAG Accessibility &nbsp;·&nbsp; Jira Integration</footer>
+<footer>QA AI &nbsp;·&nbsp; Gemini AI &nbsp;·&nbsp; Sprint Health &nbsp;·&nbsp; WCAG Accessibility &nbsp;·&nbsp; Jira Integration</footer>
 </div><!-- wrap -->
 
 <!-- ── Fail Reason Modal ── -->
@@ -453,10 +491,71 @@ const STATUS_HTML = {
   declined:    `<span class="status s-declined">🚫 Declined</span>`
 };
 
+// ── Config (loaded once on startup) ───────────────────────────
+let qaLeadEmail = "";
+fetch("/config").then(r => r.json()).then(cfg => { qaLeadEmail = cfg.qaLeadEmail || ""; }).catch(() => {});
+
+let lastRunCommand = null; // stored by server on each run start
+let latestRun = null;
+let renderedRunId = null;
+let expandedScenarios = new Set();
+let expandedTests = new Set();
+
+async function stopRun() {
+  const btn = document.getElementById("stopBtn");
+  btn.disabled = true; btn.textContent = "Stopping…";
+  try {
+    await fetch("/stop", { method: "POST" });
+  } catch (_) {}
+  btn.disabled = false; btn.textContent = "⏹ Stop";
+}
+
+async function resumeRun() {
+  const btn = document.getElementById("resumeBtn");
+  btn.disabled = true; btn.textContent = "Resuming…";
+  try {
+    await fetch("/resume", { method: "POST" });
+  } catch (_) {}
+  btn.disabled = false; btn.textContent = "▶ Resume";
+}
+
 // ── Fail reason modal ─────────────────────────────────────────
 let failReasons = {};
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;"
+  }[ch]));
+}
 function showFailReason(id) {
   const entry = failReasons[id] || { name: id, actual: "No details available." };
+  const screenshot = entry.screenshot
+    ? `<img class="fail-screenshot" src="${escapeHtml(entry.screenshot)}" alt="Failure screenshot for ${escapeHtml(entry.id || id)}">`
+    : `<div class="fail-no-screenshot">No screenshot was captured for this failure.</div>`;
+
+  document.getElementById("failModalTitle").textContent = "Failure Details";
+  document.getElementById("failModalBody").innerHTML  = `
+    <div class="fail-detail-row">
+      <div class="fail-detail-label">Test case ID</div>
+      <div class="fail-detail-value">${escapeHtml(entry.id || id)}</div>
+    </div>
+    <div class="fail-detail-row">
+      <div class="fail-detail-label">Test case name</div>
+      <div class="fail-detail-value">${escapeHtml(entry.name || id)}</div>
+    </div>
+    <div class="fail-detail-row">
+      <div class="fail-detail-label">Failed reason / actual error</div>
+      <div class="fail-detail-value">${escapeHtml(entry.actual || "No details available.")}</div>
+    </div>
+    <div class="fail-detail-row">
+      <div class="fail-detail-label">Screenshot captured at failure moment</div>
+      ${screenshot}
+    </div>`;
+  document.getElementById("failOverlay").classList.add("open");
+  return;
   document.getElementById("failModalTitle").textContent = `❌  ${entry.name}`;
   document.getElementById("failModalBody").textContent  = entry.actual;
   document.getElementById("failOverlay").classList.add("open");
@@ -467,8 +566,251 @@ function closeFailModal() {
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeFailModal(); });
 
 /* ── Live Run ────────────────────────────────────────────── */
+function compactScenarioLabel(value, fallback) {
+  const raw = String(value || "").trim();
+  const text = raw || fallback || "General scenario";
+  const lower = text.toLowerCase();
+  if (/\b(cart|product|inventory|add to cart|remove|checkout)\b/.test(lower)) return "Cart scenario";
+  if (/\b(login|credential|username|password|auth)\b/.test(lower)) return "Login scenario";
+  if (/\b(search|filter|sort)\b/.test(lower)) return "Search scenario";
+  return text.length > 64 ? text.slice(0, 61) + "..." : text;
+}
+
+function scenarioKeyFromName(name) {
+  return String(name || "scenario")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "scenario";
+}
+
+function scenarioNameForTest(t) {
+  if (t.scenarioName) return compactScenarioLabel(t.scenarioName, "General scenario");
+  if (t.scenario) return compactScenarioLabel(t.scenario, "General scenario");
+  if (t.group) return compactScenarioLabel(t.group, "General scenario");
+  return compactScenarioLabel(`${t.name || ""} ${t.expected || ""} ${t.actual || ""}`, "General scenario");
+}
+
+function buildScenarioGroups(tests) {
+  const groups = new Map();
+  for (const t of tests) {
+    const scenarioName = scenarioNameForTest(t);
+    const key = t.scenarioId || scenarioKeyFromName(scenarioName);
+    if (!groups.has(key)) groups.set(key, { key, name: scenarioName, items: [] });
+    groups.get(key).items.push(t);
+  }
+  return [...groups.values()];
+}
+
+function scenarioSummary(items) {
+  const pass = items.filter(t => t.status === "pass").length;
+  const fail = items.filter(t => t.status === "fail" || t.status === "error").length;
+  const waiting = items.filter(t => t.pendingApproval || t.status === "awaiting").length;
+  const classifying = items.filter(t => t.status === "classifying").length;
+  const running = items.filter(t => t.status === "running").length;
+  const jira = items.filter(t => t.jiraUrl && !t.duplicate).length;
+  return { pass, fail, waiting, classifying, running, jira, total: items.length };
+}
+
+function scenarioStatusHtml(items) {
+  const s = scenarioSummary(items);
+  if (s.running || s.classifying) return s.classifying ? STATUS_HTML.classifying : STATUS_HTML.running;
+  if (s.waiting) return STATUS_HTML.awaiting;
+  if (s.fail) return STATUS_HTML.fail;
+  if (items.length && s.pass === items.length) return STATUS_HTML.pass;
+  return STATUS_HTML.pending;
+}
+
+function scenarioCountsHtml(items) {
+  const s = scenarioSummary(items);
+  return `<div class="scenario-counts">
+    <span class="scenario-pill">${s.total} checks</span>
+    <span class="scenario-pill pass">${s.pass} pass</span>
+    <span class="scenario-pill fail">${s.fail} fail</span>
+    ${s.waiting ? `<span class="scenario-pill wait">${s.waiting} awaiting</span>` : ""}
+    ${s.running ? `<span class="scenario-pill">${s.running} running</span>` : ""}
+    ${s.classifying ? `<span class="scenario-pill">${s.classifying} classifying</span>` : ""}
+  </div>`;
+}
+
+function jiraSummaryHtml(items) {
+  const s = scenarioSummary(items);
+  if (s.waiting) return `<span style="color:#f9a825;font-size:.74rem;font-weight:600;">Awaiting Approval</span>`;
+  if (s.jira) return `<span class="jira-link">${s.jira} ticket${s.jira === 1 ? "" : "s"}</span>`;
+  return `<span class="dash">-</span>`;
+}
+
+function renderResultRow(t, hiddenClass) {
+  const catClass = t.category ? (CAT_CLASS[t.category] || "") : "";
+  const catEmoji = t.category ? (CAT_EMOJI[t.category] || "") : "";
+  const repeatKey = t.jiraUrl ? t.jiraUrl.split("/browse/")[1] : "?";
+  const jiraCell = t.duplicate
+    ? `<span style="color:var(--orange);font-size:.74rem;font-weight:600;">Repeated</span>
+       ${t.jiraUrl ? `<br><a href="${escapeHtml(t.jiraUrl)}" target="_blank" style="color:var(--orange);text-decoration:underline;font-size:.7rem;font-family:monospace">${escapeHtml(repeatKey)}</a>` : ""}`
+    : t.status === "declined"
+      ? `<span style="color:#c62828;font-size:.74rem;font-weight:600;">Declined</span>`
+      : t.jiraUrl
+      ? `<a class="jira-link" href="${escapeHtml(t.jiraUrl)}" target="_blank">${escapeHtml(t.jiraUrl.split("/browse/")[1] || "View")}</a>`
+      : t.pendingApproval
+        ? `<span style="color:#f9a825;font-size:.74rem;font-weight:600;">Awaiting Approval</span>`
+        : `<span class="dash">-</span>`;
+
+  let statusCell;
+  if ((t.status === "fail" || t.status === "error") && t.actual) {
+    failReasons[t.id] = { id: t.id, name: t.name || t.id, actual: t.actual, screenshot: t.screenshot || "" };
+    const cls = t.status === "fail" ? "s-fail" : "s-error";
+    const ico = t.status === "fail" ? "X" : "!";
+    const lbl = t.status === "fail" ? "Fail" : "Error";
+    statusCell = `<span class="status ${cls} fail-link" onclick="showFailReason('${escapeHtml(t.id)}')" title="Click to see full reason">${ico} ${lbl}</span>`;
+  } else {
+    statusCell = STATUS_HTML[t.status] || STATUS_HTML.pending;
+  }
+
+  const steps = Array.isArray(t.steps) ? t.steps.filter(Boolean) : [];
+  const stepsExpanded = expandedTests.has(t.id);
+  const stepsToggle = steps.length
+    ? `<span class="tc-steps-toggle" onclick="toggleTestSteps('${escapeHtml(t.id)}')" title="Show test steps">${stepsExpanded ? "▾" : "▸"} ${steps.length} step${steps.length === 1 ? "" : "s"}</span>`
+    : "";
+
+  const stepsRow = steps.length
+    ? `<tr class="tc-steps-row ${hiddenClass} ${stepsExpanded ? "" : "tc-steps-hidden"}">
+        <td></td>
+        <td colspan="4">
+          <div class="tc-steps-box">
+            ${t.expected ? `<div class="tc-steps-expected"><b>Expected:</b> ${escapeHtml(t.expected)}</div>` : ""}
+            <ol class="tc-steps-list">${steps.map(s => `<li>${escapeHtml(s)}</li>`).join("")}</ol>
+          </div>
+        </td>
+      </tr>`
+    : "";
+
+  return `<tr class="scenario-detail ${hiddenClass}">
+    <td><span class="tc-id">${escapeHtml(t.id || "-")}</span></td>
+    <td><div class="tc-name">${escapeHtml(t.name || "")}</div>${stepsToggle}</td>
+    <td>${statusCell}</td>
+    <td>${t.category ? `<span class="cat ${catClass}">${catEmoji} ${escapeHtml(t.category)}</span>` : `<span class="dash">-</span>`}</td>
+    <td>${jiraCell}</td>
+  </tr>${stepsRow}`;
+}
+
+function toggleTestSteps(id) {
+  if (expandedTests.has(id)) expandedTests.delete(id);
+  else expandedTests.add(id);
+  if (latestRun) render(latestRun);
+}
+
+// ── Download report — self-contained HTML built from the current run ──────────
+function reportStatusLabel(t) {
+  if (t.status === "pass") return "PASS";
+  if (t.status === "fail") return "FAIL";
+  if (t.status === "error") return "ERROR";
+  if (t.duplicate) return "DUPLICATE";
+  if (t.status === "declined") return "DECLINED";
+  if (t.pendingApproval || t.status === "awaiting") return "AWAITING APPROVAL";
+  return (t.status || "PENDING").toUpperCase();
+}
+function downloadReport() {
+  const run = latestRun;
+  const tests = ((run && run.tests) || []).filter(t => t.id !== "__done__");
+  if (!tests.length) { alert("No test run to download yet. Run a test first."); return; }
+
+  const totals = {
+    total: tests.length,
+    pass: tests.filter(t => t.status === "pass").length,
+    fail: tests.filter(t => t.status === "fail" || t.status === "error").length,
+    awaiting: tests.filter(t => t.pendingApproval || t.status === "awaiting").length,
+    jira: tests.filter(t => t.jiraUrl && !t.duplicate).length
+  };
+  const generated = new Date().toLocaleString();
+  const started = run.started ? new Date(run.started).toLocaleString() : "-";
+  const groups = buildScenarioGroups(tests);
+
+  const scenariosHtml = groups.map(g => {
+    const s = scenarioSummary(g.items);
+    const rows = g.items.map(t => {
+      const label = reportStatusLabel(t);
+      const cls = label === "PASS" ? "pass" : (label === "FAIL" || label === "ERROR") ? "fail" : "other";
+      const steps = Array.isArray(t.steps) ? t.steps.filter(Boolean) : [];
+      const details = [];
+      if (t.expected) details.push(`<div class="exp"><b>Expected:</b> ${escapeHtml(t.expected)}</div>`);
+      if (steps.length) details.push(`<ol class="steps">${steps.map(st => `<li>${escapeHtml(st)}</li>`).join("")}</ol>`);
+      if ((t.status === "fail" || t.status === "error") && t.actual) details.push(`<div class="reason"><b>Reason:</b> ${escapeHtml(t.actual)}</div>`);
+      const jira = t.jiraUrl ? `<a href="${escapeHtml(t.jiraUrl)}">${escapeHtml(t.jiraUrl.split("/browse/")[1] || t.jiraUrl)}</a>` : (t.pendingApproval ? "Awaiting Approval" : "-");
+      return `<tr>
+        <td class="mono">${escapeHtml(t.id || "-")}</td>
+        <td>${escapeHtml(t.name || "")}${details.length ? `<div class="det">${details.join("")}</div>` : ""}</td>
+        <td><span class="st ${cls}">${label}</span></td>
+        <td>${t.category ? escapeHtml(t.category) : "-"}</td>
+        <td>${jira}</td>
+      </tr>`;
+    }).join("");
+    return `<h2>${escapeHtml(g.name)}</h2>
+      <div class="sub">${s.total} checks · ${s.pass} pass · ${s.fail} fail${s.waiting ? ` · ${s.waiting} awaiting` : ""}</div>
+      <table><thead><tr><th>ID</th><th>Test case &amp; steps</th><th>Status</th><th>AI Category</th><th>Jira</th></tr></thead>
+      <tbody>${rows}</tbody></table>`;
+  }).join("");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>QA AI — Test Report</title>
+<style>
+  body{font-family:Segoe UI,Arial,sans-serif;color:#1a1a1a;margin:32px;background:#fff}
+  h1{margin:0 0 4px;font-size:22px}
+  .meta{color:#666;font-size:13px;margin-bottom:18px}
+  .cards{display:flex;gap:12px;margin:16px 0 26px;flex-wrap:wrap}
+  .card{border:1px solid #e2e2e2;border-radius:8px;padding:10px 16px;min-width:90px}
+  .card .n{font-size:22px;font-weight:700}.card .l{font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.5px}
+  .card.pass .n{color:#2e7d32}.card.fail .n{color:#c62828}.card.wait .n{color:#f9a825}.card.jira .n{color:#1565c0}
+  h2{margin:24px 0 2px;font-size:16px}
+  .sub{color:#777;font-size:12px;margin-bottom:8px}
+  table{width:100%;border-collapse:collapse;margin-bottom:10px;font-size:13px}
+  th,td{border:1px solid #e6e6e6;padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#f5f2ec;font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:#555}
+  .mono{font-family:Consolas,monospace;color:#888;white-space:nowrap}
+  .st{display:inline-block;padding:2px 8px;border-radius:5px;font-size:11px;font-weight:700}
+  .st.pass{background:#e6f4ea;color:#2e7d32}.st.fail{background:#fdecea;color:#c62828}.st.other{background:#fff4e0;color:#92640a}
+  .det{margin-top:6px}.exp{font-size:12px;color:#555;margin:4px 0}
+  .steps{margin:4px 0 0;padding-left:20px}.steps li{font-size:12px;margin:2px 0}
+  .reason{font-size:12px;color:#c62828;margin-top:4px}
+  a{color:#1565c0}
+  footer{margin-top:24px;color:#999;font-size:11px;border-top:1px solid #eee;padding-top:10px}
+</style></head><body>
+  <h1>QA AI — Test Report</h1>
+  <div class="meta">Run started: ${escapeHtml(started)} &nbsp;·&nbsp; Generated: ${escapeHtml(generated)} &nbsp;·&nbsp; ${run.finished ? "Completed" : "In progress"}</div>
+  <div class="cards">
+    <div class="card"><div class="n">${totals.total}</div><div class="l">Total</div></div>
+    <div class="card pass"><div class="n">${totals.pass}</div><div class="l">Passed</div></div>
+    <div class="card fail"><div class="n">${totals.fail}</div><div class="l">Failed</div></div>
+    <div class="card wait"><div class="n">${totals.awaiting}</div><div class="l">Awaiting</div></div>
+    <div class="card jira"><div class="n">${totals.jira}</div><div class="l">Jira</div></div>
+  </div>
+  ${scenariosHtml}
+  <footer>Generated by QA AI · Tip: open this file and use your browser's Print → Save as PDF for a PDF report.</footer>
+</body></html>`;
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `qa-report-${stamp}.html`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function toggleScenario(key) {
+  if (expandedScenarios.has(key)) expandedScenarios.delete(key);
+  else expandedScenarios.add(key);
+  if (latestRun) render(latestRun);
+}
+
 function render(run) {
   if (!run || !run.id) return;
+  latestRun = run;
+  if (renderedRunId !== run.id) {
+    renderedRunId = run.id;
+    expandedScenarios = new Set();
+    expandedTests = new Set();
+  }
+
   const tests    = (run.tests||[]).filter(t=>t.id!=="__done__");
   const done     = tests.filter(t=>["pass","fail","error","awaiting","duplicate","declined"].includes(t.status));
   const passed   = tests.filter(t=>t.status==="pass").length;
@@ -493,24 +835,63 @@ function render(run) {
     total>0      ? `Running · ${done.length}/${total} tests`   : "No active run";
 
   const dot=document.getElementById("dot"), lbl=document.getElementById("liveLabel");
+  const isRunning = !run.finished && total > 0;
   dot.className = run.finished?"dot done":total>0?"dot running":"dot";
   lbl.textContent = run.finished
     ? `Run complete — ${new Date(run.started).toLocaleTimeString()}`
     : total>0 ? "Running…" : "Waiting for test run…";
   document.getElementById("runMeta").textContent = run.started?`Started: ${new Date(run.started).toLocaleTimeString()}`:"";
 
+  // Show Stop while running, Resume when finished
+  document.getElementById("stopBtn").style.display   = isRunning   ? "inline-block" : "none";
+  document.getElementById("resumeBtn").style.display = run.finished ? "inline-block" : "none";
+  document.getElementById("downloadBtn").style.display = total > 0 ? "inline-block" : "none";
+
   if (!tests.length) return;
   failReasons = {};
+  const groupedRows = buildScenarioGroups(tests).map(group => {
+    const expanded = expandedScenarios.has(group.key);
+    const hiddenClass = expanded ? "" : "scenario-hidden";
+    const s = scenarioSummary(group.items);
+    const classified = group.items.filter(t => t.category).length;
+    const categoryText = s.fail ? `${classified}/${s.fail} classified` : "-";
+
+    return `<tr class="scenario-row" data-scenario-key="${escapeHtml(group.key)}">
+        <td colspan="2">
+          <div class="scenario-title">
+            <span class="scenario-toggle">${expanded ? "-" : "+"}</span>
+            <div>
+              <div class="scenario-name">${escapeHtml(group.name)}</div>
+              <div class="scenario-meta">${scenarioCountsHtml(group.items)}</div>
+            </div>
+          </div>
+        </td>
+        <td>${scenarioStatusHtml(group.items)}</td>
+        <td>${categoryText === "-" ? `<span class="dash">-</span>` : `<span class="dash">${escapeHtml(categoryText)}</span>`}</td>
+        <td>${jiraSummaryHtml(group.items)}</td>
+      </tr>
+      ${group.items.map(t => renderResultRow(t, hiddenClass)).join("")}`;
+  }).join("");
+
+  document.getElementById("tableBody").innerHTML = `
+    <table><thead><tr>
+      <th width="80">ID</th><th>Test Name</th>
+      <th width="180">Status</th><th width="160">AI Category</th><th width="140">Jira</th>
+    </tr></thead><tbody>${groupedRows}</tbody></table>`;
+
+  document.querySelectorAll(".scenario-row").forEach(row => {
+    row.addEventListener("click", () => toggleScenario(row.dataset.scenarioKey));
+  });
+  return;
+
   const rows = tests.map(t=>{
     const catClass = t.category?(CAT_CLASS[t.category]||""):"";
     const catEmoji = t.category?(CAT_EMOJI[t.category]||""):"";
     const repeatKey  = t.jiraUrl ? t.jiraUrl.split("/browse/")[1] : "?";
     const repeatCount= t.repeatCount || 1;
     const jiraCell = t.duplicate
-      ? `<span style="color:var(--orange);font-size:.74rem;font-family:monospace;line-height:1.5">
-           🔁 Repeated ×${repeatCount}<br>
-           <a href="${t.jiraUrl||"#"}" target="_blank" style="color:var(--orange);text-decoration:underline;font-size:.7rem">${repeatKey}</a>
-         </span>`
+      ? `<span style="color:var(--orange);font-size:.74rem;font-weight:600;">🔁 Repeated</span>
+         ${t.jiraUrl ? `<br><a href="${t.jiraUrl}" target="_blank" style="color:var(--orange);text-decoration:underline;font-size:.7rem;font-family:monospace">${repeatKey}</a>` : ""}`
       : t.status === "declined"
         ? `<span style="color:#c62828;font-size:.74rem;font-weight:600;">🚫 Declined</span>`
         : t.jiraUrl
@@ -522,7 +903,7 @@ function render(run) {
     // Build clickable badge for fail/error when actual reason is available
     let statusCell;
     if ((t.status === "fail" || t.status === "error") && t.actual) {
-      failReasons[t.id] = { name: t.name || t.id, actual: t.actual };
+      failReasons[t.id] = { id: t.id, name: t.name || t.id, actual: t.actual, screenshot: t.screenshot || "" };
       const cls = t.status === "fail" ? "s-fail" : "s-error";
       const ico = t.status === "fail" ? "❌" : "💥";
       const lbl = t.status === "fail" ? "Fail" : "Error";
@@ -546,8 +927,19 @@ function render(run) {
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+// ── Debounced render — batches rapid SSE bursts during classification ─────────
+let _renderTimer = null, _pendingRun = null;
+function scheduleRender(data) {
+  _pendingRun = data;
+  if (_renderTimer) return;
+  _renderTimer = setTimeout(() => {
+    _renderTimer = null;
+    if (_pendingRun) { render(_pendingRun); renderHealth(_pendingRun); _pendingRun = null; }
+  }, 150);
+}
+
 const es = new EventSource("/stream");
-es.onmessage = e => { try { const d=JSON.parse(e.data); render(d); renderHealth(d); } catch(_){} };
+es.onmessage = e => { try { scheduleRender(JSON.parse(e.data)); } catch(_){} };
 es.onerror   = () => { document.getElementById("liveLabel").textContent="Reconnecting…"; document.getElementById("dot").className="dot"; };
 
 // Fallback: fetch current run on load in case SSE initial message was missed
@@ -692,17 +1084,40 @@ function addTyping() {
   box.appendChild(div); scrollChat();
 }
 function removeTyping() { const t=document.getElementById("typingIndicator"); if(t)t.remove(); }
-function setInputState(busy) { chatBusy=busy; document.getElementById("chatSend").disabled=busy; document.getElementById("chatInput").disabled=busy; }
+function setInputState(busy) {
+  chatBusy=busy;
+  document.getElementById("chatSend").disabled=busy;
+  document.getElementById("chatInput").disabled=busy;
+  const attach=document.getElementById("chatAttach");
+  if(attach) attach.disabled=busy;
+}
 function autoResize(el){el.style.height='auto';el.style.height=Math.min(el.scrollHeight,160)+'px';}
 document.addEventListener('DOMContentLoaded',()=>{const i=document.getElementById('chatInput');if(i)i.addEventListener('input',()=>autoResize(i));});
+function onExcelSelected() {
+  const file=document.getElementById("chatExcelFile").files[0];
+  document.getElementById("chatFileName").textContent=file ? file.name : "";
+}
 function sendChip(el) { const i=document.getElementById("chatInput"); i.value=el.textContent.replace(/^[▶🔍🌐❓♿📋📝📚]\s*/,"").trim(); autoResize(i); sendChat(); }
 async function sendChat() {
   if(chatBusy) return;
   const input=document.getElementById("chatInput"), msg=input.value.trim();
-  if(!msg) return;
-  input.value=""; input.style.height='auto'; addMsg("user",msg); addTyping(); setInputState(true); logBubble=null;
+  const fileInput=document.getElementById("chatExcelFile");
+  const excelFile=fileInput?.files?.[0] || null;
+  if(!msg && !excelFile) return;
+  const shownMsg=excelFile ? `${msg || "Generate tests from uploaded data"}\n[Attached: ${excelFile.name}]` : msg;
+  input.value=""; input.style.height='auto'; addMsg("user",shownMsg); addTyping(); setInputState(true); logBubble=null;
   try {
-    const resp=await fetch("/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:msg})});
+    let resp;
+    if(excelFile) {
+      const fd=new FormData();
+      fd.append("message",msg);
+      fd.append("excel",excelFile);
+      resp=await fetch("/chat-excel",{method:"POST",body:fd});
+      fileInput.value="";
+      document.getElementById("chatFileName").textContent="";
+    } else {
+      resp=await fetch("/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({message:msg})});
+    }
     const reader=resp.body.getReader(), decoder=new TextDecoder(); let buffer="";
     while(true) {
       const {value,done}=await reader.read(); if(done)break;
@@ -720,11 +1135,10 @@ async function sendChat() {
         else if(chunk.type==="done")       { removeTyping(); setInputState(false); document.getElementById("chatInput").focus(); }
       }
     }
-  } catch(err) { removeTyping(); addMsg("agent",`⚠️ ${err.message}`,"error"); }
+  } catch(err) { removeTyping(); addMsg("agent",`Upload/chat error: ${err.message}`,"error"); }
   setInputState(false); document.getElementById("chatInput").focus();
 }
-
-/* ── Manual Tests tab ───────────────────────────────────────── */
+/* Manual Tests tab ───────────────────────────────────────── */
 function clearManualLog() {
   const log = document.getElementById("manualLog");
   log.textContent = "";
@@ -743,11 +1157,11 @@ async function runManualTests() {
   const raw    = testsEl.value.trim();
   if (!raw) { alert("Please enter at least one test case."); return; }
 
-  // Build the message the chat agent expects
+  // Build the message the chat agent expects — keep each line separate so order is preserved
   const lines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 2);
-  let msg = `manual: ${lines.join(", ")}`;
-  if (url)    msg += ` on ${url}`;
-  if (sprint) msg += ` sprint ${sprint}`;
+  let msg = `manual:\n${lines.join("\n")}`;
+  if (url)    msg += `\nurl: ${url}`;
+  if (sprint) msg += `\nsprint ${sprint}`;
 
   // Show log panel, switch to Live Run so results are visible
   logEl.style.display = "block";

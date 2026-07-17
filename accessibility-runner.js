@@ -1,23 +1,10 @@
 // accessibility-runner.js
 // node accessibility-runner.js --url https://myntra.com --sprint Sprint-01
 require("dotenv").config();
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { getHtml, stripHtml, runCheck } = require("./utils");
 const { saveTestCases, saveRunResult }  = require("./storage");
 const { runBatchAutomation }            = require("./automation");
-
-const genAI  = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const genAI2 = new GoogleGenerativeAI(process.env.GEMINI_API_KEY_2 || process.env.GEMINI_API_KEY);
-const geminiModels = [
-  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash" }),        name: "Gemini 2.5 Flash [K1]"      },
-  { model: genAI.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),   name: "Gemini 2.5 Flash Lite [K1]" },
-  { model: genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" }),name: "Gemini Flash Lite [K1]"     },
-  { model: genAI.getGenerativeModel({ model: "gemini-2.0-flash" }),        name: "Gemini 2.0 Flash [K1]"      },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash" }),       name: "Gemini 2.5 Flash [K2]"      },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.5-flash-lite" }),  name: "Gemini 2.5 Flash Lite [K2]" },
-  { model: genAI2.getGenerativeModel({ model: "gemini-flash-lite-latest"}),name: "Gemini Flash Lite [K2]"     },
-  { model: genAI2.getGenerativeModel({ model: "gemini-2.0-flash" }),       name: "Gemini 2.0 Flash [K2]"      },
-];
+const { generateJsonWithFallback } = require("./ai-provider");
 
 const RUN_ID = `a11y-${Date.now()}`;
 const arg = (f) => { const i = process.argv.indexOf(f); return i !== -1 ? process.argv[i+1] : null; };
@@ -73,25 +60,11 @@ Return ONLY valid JSON — no markdown:
 HTML:
 ${stripped}`;
 
-  for (const { model, name: modelName } of geminiModels) {
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const result = await model.generateContent(prompt);
-        console.log(`   🔵 AI: ${modelName}\n`);
-        const raw = result.response.text().trim().replace(/^```json\s*/i,"").replace(/```\s*$/i,"").trim();
-        const parsed = JSON.parse(raw);
-        return parsed.testCases ?? parsed;
-      } catch(err) {
-        const isQuota = err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
-        const is404   = err.message?.includes("404");
-        if (isQuota || is404) { console.log(`   ⚠️  ${modelName} ${is404?"not available":"quota exhausted"} — switching…`); break; }
-        const retryable = err.message?.includes("429") || err.message?.includes("503");
-        if (!retryable || attempt === 3) { console.log(`   ⚠️  ${modelName} failed — switching…`); break; }
-        await new Promise(r => setTimeout(r, 15000));
-      }
-    }
-  }
-  throw new Error("All AI models unavailable. Please try again later.");
+  const { data: testCases } = await generateJsonWithFallback(prompt, {
+    maxTokens: 8192,
+    successMessage: "AI generated accessibility test cases"
+  });
+  return testCases;
 }
 
 async function main() {
@@ -138,7 +111,9 @@ async function main() {
       const results = await runBatchAutomation(failures, async (r) => {
         const failure = failures.find(f => f.id === r.id);
         await postResult({ id:r.id, name:failure?.title||r.id, area:"Accessibility",
-          status:"fail", actual:failure?.errorValue, category:r.category, reason:r.reason, jiraUrl:r.jiraUrl });
+          status:"fail", actual:failure?.errorValue, category:r.category, reason:r.reason, jiraUrl:r.jiraUrl,
+          pendingApproval:r.pendingApproval||false, duplicate:r.duplicate||false,
+          duplicateKey:r.duplicateKey, repeatCount:r.repeatCount });
       });
       jiraCount      = results.filter(r => r.logged).length;
       duplicateCount = results.filter(r => r.duplicate).length;
